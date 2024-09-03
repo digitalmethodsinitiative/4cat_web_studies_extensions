@@ -16,7 +16,7 @@ if __name__ == "__main__":
 					 action="store_true")
 	cli.add_argument("--component", "-c", default="backend",
 					 help="Which component of 4CAT to migrate. Nothing is installed when set to 'frontend'")  # Necessary to work with 4CAT migrate.py
-	cli.add_argument("--no-pip", "-p", default=True,
+	cli.add_argument("--no-pip", "-p", default=False,
 					 help="Run pip to install any python requirements.",
 					 action="store_true")
 	args, extras = cli.parse_known_args()
