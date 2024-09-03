@@ -49,6 +49,8 @@ if __name__ == "__main__":
 		print("This installation is only for Linux OS\nPlease download Firefox and Geckodriver manually.")
 		exit(1)
 
+	print(f"args: {args} and {args.no_pip}")
+
 	firefox_installed = False
 	geckodriver_installed = False
 	if not args.force:
