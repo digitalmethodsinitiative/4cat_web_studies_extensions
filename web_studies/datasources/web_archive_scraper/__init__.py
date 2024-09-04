@@ -9,4 +9,4 @@ from common.lib.helpers import init_datasource
 
 # Internal identifier for this data source
 DATASOURCE = "web_archive_scraper"
-NAME = "Web Archive Scraper"
+NAME = "Web Archive Collector"
