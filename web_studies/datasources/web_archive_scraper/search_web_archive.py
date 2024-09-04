@@ -112,7 +112,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
         scrape_additional_subpages = self.parameters.get("subpages", 0)
 
         preprocessed_urls = []
-        for url in query.get('preprocessed_urls'):
+        for url in query.get('validated_urls'):
             url_group = SearchWebArchiveWithSelenium.create_web_archive_urls(url, query["min_date"], query["max_date"],
                                                                              query.get('frequency'))
             [preprocessed_urls.append(new_url) for new_url in url_group]
@@ -434,6 +434,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
             "query": query.get("query"),
             "min_date": query.get("min_date"),
             "max_date": query.get("max_date"),
+            "frequency": query.get("frequency"),
             "validated_urls": validated_urls,
             "subpages": query.get("subpages", 0),
             'http_request': query.get("http_request", "selenium_only"),
