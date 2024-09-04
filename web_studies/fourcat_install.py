@@ -37,7 +37,24 @@ if __name__ == "__main__":
 
 		return result
 
+	def pip_install():
+		"""
+		Install python requirements
+		"""
+		print("Installing python requirements")
+		interpreter = sys.executable
+		command = f"{interpreter} -m pip install -r requirements.txt"
+		run_command(command, "Error installing python requirements")
+
 	if args.component == "frontend":
+		# Frontend still needs packages though only to import modules successfully
+		if not args.no_pip:
+			try:
+				import selenium
+			except ImportError:
+				pip_install()
+				print("Installed required packages for extension.")
+				exit(0)
 		print("4CAT frontend component selected. No installation required.")
 		exit(0)
 	elif args.component not in ["backend", "both"]:
@@ -133,10 +150,7 @@ if __name__ == "__main__":
 		run_command(command, "Error removing temp download files")
 
 	if not args.no_pip:
-		print("Installing python requirements")
-		interpreter = sys.executable
-		command = f"{interpreter} -m pip install -r requirements.txt"
-		run_command(command, "Error installing python requirements")
+		pip_install()
 
 	config.with_db()
 	config.set('selenium.installed', True)
