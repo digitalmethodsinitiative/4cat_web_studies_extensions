@@ -17,9 +17,9 @@ Web Studies is a companion extension to the [4CAT Capture and Analysis Toolkit](
   - Collect data on [Google's](https://play.google.com/store/apps) apps
 ### Cloud app store studies
 -  Microsoft Azure App Store
-  - Collect data on [Microsoft Azure](https://azuremarketplace.microsoft.com/en-US/) applications
+   - Collect data on [Microsoft Azure](https://azuremarketplace.microsoft.com/en-US/) applications
 -  Amazon Web Services (AWS) Marketplace
-  - Collect data on [AWS](https://azuremarketplace.microsoft.com/en-US/) applications
+   - Collect data on [AWS](https://azuremarketplace.microsoft.com/en-US/) applications
 
 ## New analysis processors
 - Take screenshots of any column containing URLs
