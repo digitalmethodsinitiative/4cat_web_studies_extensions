@@ -16,9 +16,9 @@ def check_for_requirements():
     """
     Checks for required python packages, browser, and webdriver
     """
-    if not shutil.which(config.get("selenium.selenium_executable_path", "/usr/local/bin/geckodriver")):
+    if not shutil.which(config.get("selenium.selenium_executable_path")):
         return False
-    if not shutil.which(config.get("selenium.browser", "firefox")):
+    if not shutil.which(config.get("selenium.browser")):
         return False
 
     return True
@@ -33,9 +33,9 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 
-if config.get('selenium.browser', "firefox") == 'chrome':
+if config.get('selenium.browser') == 'chrome':
     from selenium.webdriver.chrome.options import Options
-elif config.get('selenium.browser', "firefox") == 'firefox':
+elif config.get('selenium.browser') == 'firefox':
     from selenium.webdriver.firefox.options import Options
 else:
     raise ImportError('selenium.browser only works with "chrome" or "firefox"')
@@ -228,7 +228,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
 
         :param bool eager:  Eager loading?
         """
-        self.browser = config.get('selenium.browser', 'firefox')
+        self.browser = config.get('selenium.browser')
         # TODO review and compare Chrome vs Firefox options
         options = Options()
         options.headless = True
@@ -244,9 +244,9 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
 
         try:
             if self.browser == 'chrome':
-                self.driver = webdriver.Chrome(executable_path=config.get('selenium.selenium_executable_path', "/usr/local/bin/geckodriver"), options=options)
+                self.driver = webdriver.Chrome(executable_path=config.get('selenium.selenium_executable_path'), options=options)
             elif self.browser == 'firefox':
-                self.driver = webdriver.Firefox(executable_path=config.get('selenium.selenium_executable_path', "/usr/local/bin/geckodriver"), options=options)
+                self.driver = webdriver.Firefox(executable_path=config.get('selenium.selenium_executable_path'), options=options)
             else:
                 if hasattr(self, 'dataset'):
                     self.dataset.update_status("Selenium Scraper not configured")
@@ -645,7 +645,7 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
     config = {
         "selenium.browser": {
             "type": UserInput.OPTION_TEXT,
-            "default": "",
+            "default": "firefox",
             "help": "Browser type ('firefox' or 'chrome')",
             "tooltip": "This must correspond to the installed webdriver; the fourcat_install.py script installs firefox and geckodriver",
         },
@@ -658,7 +658,7 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
         },
         "selenium.selenium_executable_path": {
             "type": UserInput.OPTION_TEXT,
-            "default": "",
+            "default": "/usr/local/bin/geckodriver",
             "help": "Path to webdriver (geckodriver or chromedriver)",
             "tooltip": "fourcat_install.py installs to /usr/local/bin/geckodriver",
         },
