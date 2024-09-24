@@ -20,15 +20,8 @@ def check_for_requirements():
         return False
     if not shutil.which(config.get("selenium.browser", "firefox")):
         return False
-    try:
-        import selenium
-    except ImportError:
-        return False
+
     return True
-
-if not check_for_requirements():
-    raise ImportError("Selenium not set up")
-
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
