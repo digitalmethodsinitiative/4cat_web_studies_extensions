@@ -12,17 +12,6 @@ from common.lib.exceptions import ProcessorException
 from common.config_manager import config
 from common.lib.user_input import UserInput
 
-def check_for_requirements():
-    """
-    Checks for required python packages, browser, and webdriver
-    """
-    if not shutil.which(config.get("selenium.selenium_executable_path")):
-        return False
-    if not shutil.which(config.get("selenium.browser")):
-        return False
-
-    return True
-
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
@@ -624,9 +613,14 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
     @classmethod
     def is_selenium_available(cls):
         """
-        Check if Selenium is available
+        Checks for required python packages, browser, and webdriver
         """
-        return check_for_requirements()
+        if not shutil.which(config.get("selenium.selenium_executable_path")):
+            return False
+        if not shutil.which(config.get("selenium.browser")):
+            return False
+
+        return True
 
 
 class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
