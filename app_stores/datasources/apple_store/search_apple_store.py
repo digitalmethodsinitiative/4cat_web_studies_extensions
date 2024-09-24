@@ -173,7 +173,7 @@ class SearchAppleStore(Search):
                     try:
                         results.append(self.collect_detailed_data_from_apple_store_by_id(app['id'], country, lang))
                     except AppStoreConnectionError as e:
-                        self.dataset.update_status(f"Error collecting app {app['id']}: {e}")
+                        self.dataset.log(f"Error collecting app {app['id']}: {e}")
                         continue
                 else:
                     # List of apps only contains IDs
@@ -187,7 +187,7 @@ class SearchAppleStore(Search):
                     try:
                         results.append(self.collect_detailed_data_from_apple_store_by_id(app))#, country, language))
                     except AppStoreConnectionError as e:
-                        self.dataset.update_status(f"Error collecting app {app['id']}: {e}")
+                        self.dataset.log(f"Error collecting app {app['id']}: {e}")
                         continue
         if results:
             self.dataset.log(f"Collected {len(results)} results from Apple Store")
@@ -503,14 +503,14 @@ class SearchAppleStore(Search):
         token_url = f"https://apps.apple.com/{country_id}/app/id{app_id}"
         response = requests.get(token_url, headers={'User-Agent': user_agent})
         if response.status_code != 200:
-            raise Exception(f"Unable to connect to apps.apple.com: {response.status_code} {response.reason}")
+            raise AppStoreConnectionError(f"Unable to connect to {token_url}: {response.status_code} {response.reason}")
         html = response.text
 
         reg_exp = re.compile(r'token%22%3A%22([^%]+)%22%7D')
         match = reg_exp.search(html)
         token = match.group(1)
         if not token:
-            raise Exception("Unable to find token to collect data from apps.apple.com")
+            raise AppStoreConnectionError("Unable to find token to collect data from apps.apple.com")
 
         # Collect data
         # Copied from browser request
@@ -543,7 +543,7 @@ class SearchAppleStore(Search):
             if "Invalid Parameter Value" in [error.get("title", '') for error in json_data.get("errors", [])]:
                 raise AppStoreConnectionError(f"Invalid Parameter Value: {' '.join([error.get('detail', '') for error in json_data.get('errors', [])])}")
             else:
-                raise Exception(f"Unable to collect data from apps.apple.com: {response.status_code} {response.reason} - {response.text}")
+                raise AppStoreConnectionError(f"Unable to collect data from Apple internal API (app {app_id}): {response.status_code} {response.reason} - {response.text}")
 
         if len(response.text) == 0:
             raise ValueError(f"No result returned: app - {app_id}, country - {country_id}, lang - {lang}")

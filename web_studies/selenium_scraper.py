@@ -613,7 +613,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
     @classmethod
     def is_selenium_available(cls):
         """
-        Checks for required python packages, browser, and webdriver
+        Checks for browser and webdriver
         """
         if not shutil.which(config.get("selenium.selenium_executable_path")):
             return False
