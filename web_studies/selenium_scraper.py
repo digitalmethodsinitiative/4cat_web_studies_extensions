@@ -622,14 +622,10 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
                     f"document.querySelector('{error_element_type}{'.' + error_element_class if error_element_class else ''}').remove();")
 
     @classmethod
-    def is_selenium_available(cls, override_config=False):
+    def is_selenium_available(cls):
         """
         Check if Selenium is available
         """
-        if not override_config:
-            if not config.get("selenium.installed"):
-                return False
-
         return check_for_requirements()
 
 
@@ -676,12 +672,6 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
             "help": "Show advanced options",
             "tooltip": "Show advanced options for Selenium processors",
         },
-        "selenium.installed": {
-            "type": UserInput.OPTION_TOGGLE,
-            "default": False,
-            "help": "Selenium has been installed",
-            "tooltip": "Toggling off will disable Selenium processors",
-        },
     }
 
     def search(self, query):
@@ -695,6 +685,9 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
         :param dict query:  Query parameters
         :return:  Iterable of matching items, or None if there are no results.
         """
+        if not self.is_selenium_available():
+            raise ProcessorException("Selenium not available; please ensure browser and webdriver are installed and configured in settings")
+
         try:
             self.start_selenium(eager=(hasattr(self, "eager_selenium") and self.eager_selenium))
         except ProcessorException as e:

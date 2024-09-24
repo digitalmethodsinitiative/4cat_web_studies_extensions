@@ -153,7 +153,6 @@ if __name__ == "__main__":
 		pip_install()
 
 	config.with_db()
-	config.set('selenium.installed', True)
 	config.set('selenium.selenium_executable_path', "/usr/local/bin/geckodriver")
 	config.set('selenium.browser', 'firefox')
 	print("Firefox and Geckodriver installation complete")

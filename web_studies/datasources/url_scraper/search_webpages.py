@@ -56,15 +56,6 @@ class SearchWithSelenium(SeleniumSearch):
 
         return options
 
-    @classmethod
-    def is_compatible_with(cls, module=None, user=None):
-        """
-        Allow processor on image sets
-
-        :param module: Module to determine compatibility with
-        """
-        return config.get('selenium.installed', False, user=user)
-
     def get_items(self, query):
         """
         Separate and check urls, then loop through each and collects the HTML.

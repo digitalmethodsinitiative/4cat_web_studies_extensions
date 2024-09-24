@@ -125,7 +125,7 @@ class ScreenshotURLs(BasicProcessor):
 
         :param module: Dataset or processor to determine compatibility with
         """
-        return module.is_dataset() and module.get_extension() in ("csv", "ndjson")
+        return module.is_dataset() and module.get_extension() in ("csv", "ndjson") and SeleniumWrapper.is_selenium_available()
 
     def process(self):
         """
