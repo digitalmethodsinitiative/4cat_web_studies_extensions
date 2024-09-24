@@ -33,13 +33,6 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 
-if config.get('selenium.browser') == 'chrome':
-    from selenium.webdriver.chrome.options import Options
-elif config.get('selenium.browser') == 'firefox':
-    from selenium.webdriver.firefox.options import Options
-else:
-    raise ImportError('selenium.browser only works with "chrome" or "firefox"')
-
 
 ########################################################
 # This is to attempt to fix a bug in Selenium's logger #
@@ -229,7 +222,14 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         :param bool eager:  Eager loading?
         """
         self.browser = config.get('selenium.browser')
+        # Selenium options
         # TODO review and compare Chrome vs Firefox options
+        if self.browser == 'chrome':
+            from selenium.webdriver.chrome.options import Options
+        elif self.browser == 'firefox':
+            from selenium.webdriver.firefox.options import Options
+        else:
+            raise ImportError('selenium.browser only works with "chrome" or "firefox"')
         options = Options()
         options.headless = True
         options.add_argument('--headless')
