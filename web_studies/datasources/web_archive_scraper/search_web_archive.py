@@ -105,9 +105,9 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
 
         http_request = self.parameters.get("http_request", "selenium_only") == 'both'
         if http_request:
-            self.dataset.update_status('Scraping Web Archives with Selenium %s and HTTP Requests' % config.get('selenium.browser'))
+            self.dataset.update_status('Scraping Web Archives with Selenium %s and HTTP Requests' % self.browser)
         else:
-            self.dataset.update_status('Scraping Web Archives with Selenium %s' % config.get('selenium.browser'))
+            self.dataset.update_status('Scraping Web Archives with Selenium %s' % self.browser)
         scrape_additional_subpages = self.parameters.get("subpages", 0)
 
         preprocessed_urls = []

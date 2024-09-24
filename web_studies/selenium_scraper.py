@@ -12,25 +12,41 @@ from common.lib.exceptions import ProcessorException
 from common.config_manager import config
 from common.lib.user_input import UserInput
 
-if config.get('selenium.browser') and config.get('selenium.selenium_executable_path'):
-    from selenium import webdriver
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support import expected_conditions as EC
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.common.exceptions import WebDriverException, SessionNotCreatedException, UnexpectedAlertPresentException, \
-    TimeoutException, JavascriptException, NoAlertPresentException, ElementClickInterceptedException, InvalidSessionIdException
-    from selenium.webdriver.common.action_chains import ActionChains
-    from selenium.webdriver.common.keys import Keys
-    from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
+def check_for_requirements():
+    """
+    Checks for required python packages, browser, and webdriver
+    """
+    if not shutil.which(config.get("selenium.selenium_executable_path", "/usr/local/bin/geckodriver")):
+        return False
+    if not shutil.which(config.get("selenium.browser", "firefox")):
+        return False
+    try:
+        import selenium
+    except ImportError:
+        return False
+    return True
 
-    if config.get('selenium.browser') == 'chrome':
-        from selenium.webdriver.chrome.options import Options
-    elif config.get('selenium.browser') == 'firefox':
-        from selenium.webdriver.firefox.options import Options
-    else:
-        raise ImportError('selenium.browser only works with "chrome" or "firefox"')
+if not check_for_requirements():
+    raise ImportError("Selenium not set up")
+
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.common.exceptions import WebDriverException, SessionNotCreatedException, UnexpectedAlertPresentException, \
+TimeoutException, JavascriptException, NoAlertPresentException, ElementClickInterceptedException, InvalidSessionIdException
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
+
+if config.get('selenium.browser', "firefox") == 'chrome':
+    from selenium.webdriver.chrome.options import Options
+elif config.get('selenium.browser', "firefox") == 'firefox':
+    from selenium.webdriver.firefox.options import Options
 else:
-    raise ImportError('Selenium not set up')
+    raise ImportError('selenium.browser only works with "chrome" or "firefox"')
+
 
 ########################################################
 # This is to attempt to fix a bug in Selenium's logger #
@@ -219,7 +235,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
 
         :param bool eager:  Eager loading?
         """
-        self.browser = config.get('selenium.browser')
+        self.browser = config.get('selenium.browser', 'firefox')
         # TODO review and compare Chrome vs Firefox options
         options = Options()
         options.headless = True
@@ -235,9 +251,9 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
 
         try:
             if self.browser == 'chrome':
-                self.driver = webdriver.Chrome(executable_path=config.get('selenium.selenium_executable_path'), options=options)
+                self.driver = webdriver.Chrome(executable_path=config.get('selenium.selenium_executable_path', "/usr/local/bin/geckodriver"), options=options)
             elif self.browser == 'firefox':
-                self.driver = webdriver.Firefox(executable_path=config.get('selenium.selenium_executable_path'), options=options)
+                self.driver = webdriver.Firefox(executable_path=config.get('selenium.selenium_executable_path', "/usr/local/bin/geckodriver"), options=options)
             else:
                 if hasattr(self, 'dataset'):
                     self.dataset.update_status("Selenium Scraper not configured")
@@ -613,14 +629,15 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
                     f"document.querySelector('{error_element_type}{'.' + error_element_class if error_element_class else ''}').remove();")
 
     @classmethod
-    def is_selenium_available(cls):
+    def is_selenium_available(cls, override_config=False):
         """
         Check if Selenium is available
         """
-        if config.get("selenium.installed"):
-             return shutil.which(config.get("selenium.selenium_executable_path"))
-        else:
-            return False
+        if not override_config:
+            if not config.get("selenium.installed"):
+                return False
+
+        return check_for_requirements()
 
 
 class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
