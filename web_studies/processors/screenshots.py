@@ -3,18 +3,20 @@ Screenshot URLs w/ Selenium
 """
 import datetime
 import re
+import os
+import json
 import time
+from ural import urls_from_text
 from selenium.common import UnexpectedAlertPresentException
 
 from backend.lib.processor import BasicProcessor
-from common.lib.helpers import UserInput, extract_urls_from_string, convert_to_int
+from common.lib.helpers import UserInput, convert_to_int
 from common.lib.exceptions import ProcessorInterruptedException, ProcessorException
 from extensions.web_studies.selenium_scraper import SeleniumWrapper
 from extensions.web_studies.datasources.url_screenshots.search_webpage_screenshots  import ScreenshotWithSelenium
 from common.config_manager import config
 
-import os
-import json
+
 
 __author__ = "Dale Wahl"
 __credits__ = ["Dale Wahl"]
@@ -160,7 +162,7 @@ class ScreenshotURLs(BasicProcessor):
                     values = values[0].split(',')
 
                 for value in values:
-                    post_urls |= set(extract_urls_from_string(value))
+                    post_urls |= set(urls_from_text(value))
 
             for post_url in post_urls:
                 if post_url not in urls:

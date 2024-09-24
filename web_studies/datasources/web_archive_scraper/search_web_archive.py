@@ -8,12 +8,11 @@ import datetime
 import requests
 import random
 import time
-
+from ural import is_url
 from dateutil.relativedelta import relativedelta
 
 from extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException, ProcessorException
-from common.lib.helpers import validate_url
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
 
@@ -419,7 +418,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
             raise QueryParametersException("Please provide a List of urls.")
 
         urls = [url.strip() for url in query.get("query", "").split('\n')]
-        validated_urls = [url for url in urls if validate_url(url)]
+        validated_urls = [url for url in urls if is_url(url)]
         if not validated_urls:
             raise QueryParametersException("No Urls detected!")
 

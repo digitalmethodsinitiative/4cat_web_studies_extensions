@@ -6,11 +6,11 @@ Currently designed around Firefox, but can also work with Chrome; results may va
 from urllib.parse import urlparse
 import datetime
 import random
+from ural import is_url
 
 from common.config_manager import config
 from extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException
-from common.lib.helpers import validate_url
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
 
@@ -263,7 +263,7 @@ class SearchWithSelenium(SeleniumSearch):
         if not query.get("query", None):
             raise QueryParametersException("Please provide a List of urls.")
         urls = [url.strip() for url in query.get("query", "").replace("\n", ",").split(',')]
-        preprocessed_urls = [url for url in urls if validate_url(url)]
+        preprocessed_urls = [url for url in urls if is_url(url)]
         if not preprocessed_urls:
             raise QueryParametersException("No Urls detected!")
 
