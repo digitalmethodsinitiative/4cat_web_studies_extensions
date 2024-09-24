@@ -637,7 +637,7 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
             "type": UserInput.OPTION_TEXT,
             "default": "",
             "help": "Browser type ('firefox' or 'chrome')",
-            "tooltip": "This must corespond to the installed webdriver; Docker installs firefox when backend container restarts if this is set to 'firefox'",
+            "tooltip": "This must correspond to the installed webdriver; the fourcat_install.py script installs firefox and geckodriver",
         },
         "selenium.max_sites": {
             "type": UserInput.OPTION_TEXT,
@@ -650,7 +650,7 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
             "type": UserInput.OPTION_TEXT,
             "default": "",
             "help": "Path to webdriver (geckodriver or chromedriver)",
-            "tooltip": "Docker installs to /usr/local/bin/geckodriver",
+            "tooltip": "fourcat_install.py installs to /usr/local/bin/geckodriver",
         },
         "selenium.firefox_extensions": {
             "type": UserInput.OPTION_TEXT_JSON,
@@ -669,7 +669,7 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
         "selenium.installed": {
             "type": UserInput.OPTION_TOGGLE,
             "default": False,
-            "help": "Has Selenium been installed",
+            "help": "Selenium has been installed",
             "tooltip": "Toggling off will disable Selenium processors",
         },
     }
