@@ -24,6 +24,9 @@ class ScreenshotWithSelenium(SeleniumSearch):
     Get HTML via the Selenium webdriver and Firefox browser
     """
     type = "image-downloader-screenshots-search"  # job ID
+    category = "Search"  # category
+    title = "Screenshot Generator"  # title displayed in UI
+    description = "Take screenshots of webpages"  # description displayed in UI
     extension = "zip"
 
     eager_selenium = True

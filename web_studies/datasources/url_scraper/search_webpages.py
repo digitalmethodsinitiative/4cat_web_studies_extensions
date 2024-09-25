@@ -19,6 +19,9 @@ class SearchWithSelenium(SeleniumSearch):
     Get HTML via the Selenium webdriver and Firefox browser
     """
     type = "url_scraper-search"  # job ID
+    category = "Search"  # category
+    title = "Selenium Url Collector"  # title displayed in UI
+    description = "Query a list of urls to scrape HTML source code"  # description displayed in UI
     extension = "ndjson"
 
     @classmethod
@@ -26,12 +29,11 @@ class SearchWithSelenium(SeleniumSearch):
         options = {
             "intro-1": {
                 "type": UserInput.OPTION_INFO,
-                "help": "This data source uses [Selenium](https://selenium-python.readthedocs.io/) in combination with "
-                        "a [Firefox webdriver](https://github.com/mozilla/geckodriver/releases) and Firefox for linux "
-                        "to scrape the HTML source code. "
+                "help": "Collect text and HTML from a provided list of URLs/links using a Firefox browser."
+                        "This uses [Selenium](https://selenium-python.readthedocs.io/) in combination with "
+                        "a [Firefox webdriver](https://github.com/mozilla/geckodriver/releases)."
                         "\n"
-                        "By mimicing a person using an actual browser, this method results in source code that closer "
-                        "resembles the source code an actual user receives when compared with simple HTML requests. It "
+                        "Using a browser more closely mimics a person compared with simple HTML requests. It "
                         "will also render JavaScript that starts as soon as a url is retrieved by a browser. "
             },
             "query-info": {

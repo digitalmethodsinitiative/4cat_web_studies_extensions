@@ -23,6 +23,9 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
     Get HTML page source from Web Archive (web.archive.org) via the Selenium webdriver and Firefox browser
     """
     type = "web_archive_scraper-search"  # job ID
+    title = "Web Archive HTML Scraper"
+    category = "Search"  # category
+    description = "Scrape HTML source code from the Web Archive (web.archive.org) using Selenium and Firefox"
     extension = "ndjson"
 
     # Web Archive returns "internal error" sometimes even when snapshot exists; we retry
@@ -37,13 +40,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
         options = {
             "intro-1": {
                 "type": UserInput.OPTION_INFO,
-                "help": "This data source uses [Selenium](https://selenium-python.readthedocs.io/) in combination with "
-                        "a [Firefox webdriver](https://github.com/mozilla/geckodriver/releases) and Firefox for linux "
-                        "to scrape the HTML source code. "
-                        "\n"
-                        "By mimicing a person using an actual browser, this method results in source code that closer "
-                        "resembles the source code an actual user receives when compared with simple HTML requests. It "
-                        "will also render JavaScript that starts as soon as a url is retrieved by a browser. "
+                "help": "Collect HTML source code from the Web Archive (web.archive.org) using Selenium and Firefox. By setting a frequency, you can collect multiple snapshots of the same page over time."
             },
             "query-info": {
                 "type": UserInput.OPTION_INFO,

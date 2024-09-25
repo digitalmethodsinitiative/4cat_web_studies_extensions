@@ -68,7 +68,7 @@ class SearchAwsStore(SeleniumSearch):
             "intro-1": {
                 "type": UserInput.OPTION_INFO,
                 "help": (
-                    "This data source allows you to query Amazon Web Services Marketplace to retrieve data on applications and developers."
+                    "This data source allows you to query [Amazon Web Services Marketplace](https://aws.amazon.com/marketplace/) to retrieve data on applications and developers."
                     )
             },
             "amount": {

@@ -27,7 +27,7 @@ class SearchGoogleStore(SearchAppleStore):
         options = {
             "intro-1": {
                 "type": UserInput.OPTION_INFO,
-                "help": ("This data source allows you to query Google's app store to retrieve data on applications and developers."
+                "help": ("This data source allows you to query [Google's app store](https://play.google.com/store/apps) to retrieve data on applications and developers."
                         "\nCountry options can be found [here](https://osf.io/gbjnu).")
             },
             "method": {

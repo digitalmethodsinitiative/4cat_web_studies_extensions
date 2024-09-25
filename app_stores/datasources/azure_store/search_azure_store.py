@@ -48,7 +48,7 @@ class SearchAzureStore(Search):
         options = {
             "intro-1": {
                 "type": UserInput.OPTION_INFO,
-                "help": ("This data source allows you to query Microsoft's Azure app store to retrieve data on applications and developers."
+                "help": ("This data source allows you to query [Microsoft's Azure app store](https://azuremarketplace.microsoft.com) to retrieve data on applications and developers."
                          )
             },
             "amount": {

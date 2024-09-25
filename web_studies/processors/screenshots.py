@@ -125,7 +125,8 @@ class ScreenshotURLs(BasicProcessor):
 
         :param module: Dataset or processor to determine compatibility with
         """
-        return module.is_dataset() and module.get_extension() in ("csv", "ndjson") and SeleniumWrapper.is_selenium_available()
+        # NOTE: cannot check SeleniumWrapper.is_selenium_available() as frontend may no have access while backend does!
+        return module.is_dataset() and module.get_extension() in ("csv", "ndjson")
 
     def process(self):
         """
@@ -134,6 +135,10 @@ class ScreenshotURLs(BasicProcessor):
         if self.source_dataset.num_rows == 0:
             self.dataset.update_status("No items in dataset.", is_final=True)
             self.dataset.finish(0)
+            return
+
+        if not SeleniumWrapper.is_selenium_available():
+            self.dataset.finish_with_error("Browser is not available; contact 4CAT admin to use processor.")
             return
 
         # Collect URLs from parent dataset
