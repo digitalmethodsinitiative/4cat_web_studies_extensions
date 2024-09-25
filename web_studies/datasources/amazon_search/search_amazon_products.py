@@ -298,26 +298,44 @@ class AmazonProductSearch(SeleniumSearch):
         recommendations = page_result.pop("recommendations")
         page_result["rec_types_displayed"] = ", ".join(recommendations.keys())
         page_result["all_recs"] = ""
+        # Add known carousels as columns
+        [page_result.update({column_name: ""}) for column_name in AmazonProductSearch.known_carousels.values()]
         rec_type = None
 
         # Replace commas in the title; this is annoying but most of our processors simply split on commas instead of taking advantage of JSONs and lists
         page_result["title"] = page_result["title"].replace(",", " ")
 
-        for column_name, rec_group in AmazonProductSearch.known_carousels.items():
-            if column_name == "all_recs":
-                # Ignore special type for all recommendations
-                continue
-            if rec_type is None and rec_group in recommendations:
-                rec_type = type(recommendations[rec_group][0])
+        for column_name, rec_group in recommendations.items():
+            if rec_type is None and rec_group:
+                rec_type = type(rec_group[0])
 
-            if rec_type == str:
-                # These are the links; originally all that was collected
-                page_result["all_recs"] += ", ".join(recommendations.get(rec_group, [])) + ", "
-                page_result[column_name] = ", ".join(recommendations.get(rec_group, []))
-            else:
-                # Currently (2024/09/12) the first item in the text is the product title
-                page_result["all_recs"] += ", ".join([rec["text"][0].replace(",", " ") for rec in recommendations.get(rec_group, [{"text": [""]}])]) + ", "
-                page_result[column_name] = ", ".join([rec["text"][0].replace(",", " ") for rec in recommendations.get(rec_group, [{"text": [""]}])])
+            def _get_rec_title(rec):
+                """
+                Helper function to get the title of a recommendation from the object collected
+
+                NOTE: using rec_type defined immediately above via loop.
+                """
+                if rec_type == str:
+                    # These are the links; originally all that was collected
+                    return rec
+                else:
+                    rec_text = rec.get("text", [""])
+                    # First item is normally the title
+                    first_text = rec_text[0].replace(",", " ")
+                    if len(rec_text) > 1:
+                        if first_text == "Feedback":
+                            # If it is "Feedback", the second item is the title
+                            return rec_text[1].replace(",", " ")
+                        if first_text == "Videos for this product":
+                            # Video rec; the third item is the title
+                            return rec_text[2].replace(",", " ")
+                    return first_text
+
+            # Add to all_recs column
+            page_result["all_recs"] += (", ".join(map(_get_rec_title, rec_group)) + "; ")
+            if column_name in AmazonProductSearch.known_carousels.values():
+                # We cannot add all the recommendation groups as columns as they are dynamic and may change by item
+                page_result[column_name] = ", ".join(map(_get_rec_title, rec_group))
 
         # Remove the HTML; maybe should only do for frontend...
         page_result.pop("html")
