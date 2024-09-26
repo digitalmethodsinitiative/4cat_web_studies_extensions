@@ -11,6 +11,7 @@ from ural import is_url
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.common.exceptions import StaleElementReferenceException
 
 from common.config_manager import config
 from extensions.web_studies.selenium_scraper import SeleniumSearch
@@ -224,23 +225,44 @@ class AmazonProductSearch(SeleniumSearch):
                 final = carousel.find_element(By.XPATH, ".//span[contains(@class, 'a-carousel-page-max')]")
                 current = int(current.text) if current.text else 1
                 final = int(final.text) if final.text else 1
+                failure_count = 0
 
                 while current <= final:
                     recs = carousel.find_elements(By.TAG_NAME, "li")
+                    recs_to_add = []
+                    stale = False
                     for rec in recs:
                         rec_link = rec.find_elements(By.CSS_SELECTOR, "a[class*=a-link-normal]")
                         if rec_link:
-                            rec_link = rec_link[0].get_attribute("href")
+                            try:
+                                rec_link = rec_link[0].get_attribute("href")
+                            except StaleElementReferenceException:
+                                stale = True
+                                break
+                            stale = 0
                             rec_html = rec.get_attribute("innerHTML")
                             rec_data = {
                                 "text": self.scrape_beautiful_text(rec_html) if rec_html else [""],
                                 "original_link": rec_link,
                                 "normalized_link": AmazonProductSearch.normalize_amazon_links(rec_link)
                             }
-                            result["recommendations"][heading_text].append(rec_data)
+                            recs_to_add.append(rec_data)
                         else:
                             # blank rec; likely all recs have been collected
                             continue
+
+                    if stale:
+                        # Stale element; try again
+                        failure_count += 1
+                        if failure_count >= 3:
+                            # Too many failures; break
+                            self.dataset.log(f"Unable to collect all recommendations from carousel {heading_text} on {url}")
+                            self.log.warning(f"Amazon product collector: Stale carousel element detected too many times; unable to collect\nDataset: {self.dataset.key}\nURL: {url}\nCarousel: {heading_text}")
+                            break
+                        continue
+
+                    # Add recs to the list
+                    result["recommendations"][heading_text] += recs_to_add
 
                     # Check if there is a next page and click if so
                     next_button = carousel.find_elements(By.XPATH, ".//div[contains(@class, 'a-carousel-right')]")
