@@ -1,0 +1,4 @@
+selenium==4.3.0
+# App Store and Google Play Store scraper requirements
+itunes-app-scraper-dmi>=0.9.5
+google-play-scraper-dmi>=0.9.17
