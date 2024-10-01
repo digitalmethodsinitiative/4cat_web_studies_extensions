@@ -27,11 +27,31 @@ Web Studies is a companion extension to the [4CAT Capture and Analysis Toolkit](
   - Provide a list of various source code to search for in collected HTML
  
 # Installation
-1. Currently 4CAT will need to use the [`extensions`](https://github.com/digitalmethodsinitiative/4cat/tree/extensions) branch until changes are released in a future version
- - Enable "Can upgrade to development branch" under "User priviledges" in the Control Panel
- - Under "Restart or Upgrade", set branch to `extensions` and click "Update to branch"
-2. Download or clone this repository and copy the folders into the `extensions` folder in your 4CAT directory
-  - `git clone https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions.git temp/`
-  - `mv temp/* extensions/`
-  - Note: with Docker you will need to do this for both backend and frontend containers (e.g., by first connecting to the containers via `docker exec -it 4cat_backend bash` or `docker exec -it 4cat_frontend bash`)
+## Docker installation
+1. Download/clone extensions into both 4CAT backend and frontend containers
+  - `docker exec -it 4cat_backend bash`
+  - `git clone https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions.git extensions/web_studies/`
+  - `exit`
+  - `docker exec -it 4cat_frontend bash`
+  - `git clone https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions.git extensions/web_studies/`
+  - `exit`
+2. Restart 4CAT containers
+  - `docker compose restart` from 4CAT directory where `docker-compose.yml` and `.env` files were previously downloaded
+  - This will automatically install necessary dependencies, Firefox, and Geckodriver
+3. Activate desired new datasources from the 4CAT Control Panel
+  - Control Panel -> Settings -> Data sources
+
+## Direct/manual installation
+1. Download or clone this repository and copy the folders into the `extensions` folder in your 4CAT directory
+  - `git clone https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions.git extensions/web_studies/`
+2. Run 4CAT's migrate script to install necessary packages
+  - `python helper-scripts/migrate.py`
+  - Note: `fourcat_insall.py` is only designed to run on linux systems. For other systems you will need set up the following:
+    - Install python packages from `requirements.txt`
+    - Download Firefox
+    - Download the appropriate Geckodriver compatible with that version of Firefox (https://github.com/mozilla/geckodriver/releases/)
+    - Adjust settings in 4CAT interface via `Control Panel -> Settings -> selenium` to point to Firefox/Geckodriver programs
+3. Activate desired datasources from the 4CAT Control Panel
+  - Control Panel -> Settings -> Data sources
+  
 
