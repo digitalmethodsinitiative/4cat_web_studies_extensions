@@ -29,12 +29,8 @@ Web Studies is a companion extension to the [4CAT Capture and Analysis Toolkit](
 # Installation
 ## Docker installation
 1. Download/clone extensions into both 4CAT backend and frontend containers
-  - `docker exec -it 4cat_backend bash`
-  - `git clone https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions.git extensions/web_studies/`
-  - `exit`
-  - `docker exec -it 4cat_frontend bash`
-  - `git clone https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions.git extensions/web_studies/`
-  - `exit`
+  - `docker exec 4cat_backend git clone https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions.git extensions/web_studies/`
+  - `docker exec 4cat_frontend git clone https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions.git extensions/web_studies/`
 2. Restart 4CAT containers
   - `docker compose restart` from 4CAT directory where `docker-compose.yml` and `.env` files were previously downloaded
   - This will automatically install necessary dependencies, Firefox, and Geckodriver
