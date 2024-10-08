@@ -150,15 +150,21 @@ class SearchAwsStore(SeleniumSearch):
                 self.dataset.log(f"Successfully retrieved AWS page {query_url}")
 
             try:
-                num_results = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, '//span[@data-test-selector="availableProductsCountMessage"]')))
-                num_results = int(num_results.text.lstrip('(').rstrip(" results)"))
+                text_results = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, '//span[@data-test-selector="availableProductsCountMessage"]')))
+                text_results = text_results.text.lstrip('(').rstrip(" results)")
+                try:
+                    num_results = int(text_results.replace("Over ", ""))
+                except ValueError:
+                    num_results = None
+                    self.log.warning(f"{self.type} could not parse number of results: {text_results}")
                 if num_results == 0:
                     self.dataset.log(f"No results found{', continuing...' if i < len(queries) - 1 else ''}")
                     continue
                 else:
-                    self.dataset.log(f"Found total of {num_results} results")
+                    self.dataset.log(f"Found total of {num_results if (num_results and 'over' not in text_results.lower()) else text_results.lower()} results")
             except selenium_exceptions.NoSuchElementException:
                 num_results = None
+                self.log.warning(f"{self.type} number of results element not found; unknown number of results")
                 self.dataset.log("Unknown number of results found")
             total_results = min(num_results if num_results else max_results, max_results)
 
