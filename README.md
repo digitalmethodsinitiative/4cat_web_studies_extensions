@@ -29,7 +29,7 @@ Web Studies is a companion extension to the [4CAT Capture and Analysis Toolkit](
 # Installation
 These extensions are designed to work with [4CAT v1.46](https://github.com/digitalmethodsinitiative/4cat/releases/tag/v1.46) or later.
 
-For instructions on adding the "I do not care about cookies" browser extension, see below.
+For instructions on adding the "I do not care about cookies" browser extension, [see below](https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions/blob/main/README.md#browser-extensions).
 ## Docker installation
 1. Download/clone extensions into both 4CAT backend and frontend containers
   - `docker exec 4cat_backend git clone https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions.git extensions/web_studies/`
