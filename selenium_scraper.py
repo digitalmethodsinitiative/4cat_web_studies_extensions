@@ -217,6 +217,11 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             from selenium.webdriver.chrome.options import Options
         elif self.browser == 'firefox':
             from selenium.webdriver.firefox.options import Options
+            profile = webdriver.FirefoxProfile(config.get("PATH_ROOT").joinpath("config/"))
+            profile.set_preference("dom.webdriver.enabled", False)
+            profile.set_preference('useAutomationExtension', False)
+            profile.update_preferences()
+            desired = DesiredCapabilities.FIREFOX
         else:
             raise ImportError('selenium.browser only works with "chrome" or "firefox"')
         options = Options()
@@ -235,7 +240,8 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             if self.browser == 'chrome':
                 self.driver = webdriver.Chrome(executable_path=config.get('selenium.selenium_executable_path'), options=options)
             elif self.browser == 'firefox':
-                self.driver = webdriver.Firefox(executable_path=config.get('selenium.selenium_executable_path'), options=options)
+                self.driver = webdriver.Firefox(executable_path=config.get('selenium.selenium_executable_path'), options=options, firefox_profile=profile, desired_capabilities=desired)
+                self.driver.maximize_window() # most users browse maximized
             else:
                 if hasattr(self, 'dataset'):
                     self.dataset.update_status("Selenium Scraper not configured")
