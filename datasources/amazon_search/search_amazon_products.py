@@ -75,6 +75,13 @@ class AmazonProductSearch(SeleniumSearch):
                 "tooltip": "Select the types of recommended products to additionally collect. If none are selected, only the provided urls will be collected. If \"All Recommendations\" is selected, all recommended products will be collected regardless of other selections."
             },
         }
+        if config.get('selenium.firefox_extensions', user=user) and config.get('selenium.firefox_extensions', user=user).get('i_dont_care_about_cookies', {}).get('path'):
+            options["ignore-cookies"] = {
+               "type": UserInput.OPTION_TOGGLE,
+               "help": "Attempt to ignore cookie walls",
+               "default": False,
+               "tooltip": 'If enabled, a firefox extension will attempt to "agree" to any cookie walls automatically.'
+            }
 
         return options
 
@@ -167,6 +174,11 @@ class AmazonProductSearch(SeleniumSearch):
             # Success; collect the final URL and load full page
             result["final_url"] = self.driver.current_url
             self.scroll_down_page_to_load(max_time=5)
+
+            # Check for potential detection
+            if any([detected_text in self.driver.page_source for detected_text in ["Enter the characters you see below", "Sorry, we just need to make sure you're not a robot."]]):
+                self.dataset.log("Detected potential CAPTCHA on %s" % url)
+                result['error'] += "CAPTCHA detected\n"
 
             # Collect the product details
             # These may change or not exist, but I would prefer to still collect them here if possible as we lose access to selenium later
@@ -325,7 +337,8 @@ class AmazonProductSearch(SeleniumSearch):
         rec_type = None
 
         # Replace commas in the title; this is annoying but most of our processors simply split on commas instead of taking advantage of JSONs and lists
-        page_result["title"] = page_result["title"].replace(",", " ")
+        if page_result.get("title"):
+            page_result["title"] = page_result.get("title").replace(",", " ")
 
         for column_name, rec_group in recommendations.items():
             if rec_type is None and rec_group:
