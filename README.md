@@ -28,6 +28,8 @@ Web Studies is a companion extension to the [4CAT Capture and Analysis Toolkit](
  
 # Installation
 These extensions are designed to work with [4CAT v1.46](https://github.com/digitalmethodsinitiative/4cat/releases/tag/v1.46) or later.
+
+For instructions on adding the "I do not care about cookies" browser extension, [see below](https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions/blob/main/README.md#browser-extensions).
 ## Docker installation
 1. Download/clone extensions into both 4CAT backend and frontend containers
   - `docker exec 4cat_backend git clone https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions.git extensions/web_studies/`
@@ -51,4 +53,12 @@ These extensions are designed to work with [4CAT v1.46](https://github.com/digit
 3. Activate desired datasources from the 4CAT Control Panel
   - Control Panel -> Settings -> Data sources
   
+## Browser extensions
+Some datasources/processors can make use of a [Firefox extension that removes cookies](https://addons.mozilla.org/en-US/firefox/addon/istilldontcareaboutcookies/). To install:
+### Docker
+1. `docker exec 4cat_backend wget https://addons.mozilla.org/firefox/downloads/file/4216095/istilldontcareaboutcookies-1.1.4.xpi` # you can find the most recent version at the above link
+2. Enable the extension in the 4CAT Control Panel
+  - Control Panel -> Settings -> selenium
+  - Update "Firefox Extensions" by adding the filename to the path section
+    - e.g. `{"i_dont_care_about_cookies": {"path": "istilldontcareaboutcookies-1.1.4.xpi", "always_enabled": false}}`
 
