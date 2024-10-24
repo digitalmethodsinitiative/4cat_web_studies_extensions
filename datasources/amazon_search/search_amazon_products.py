@@ -11,7 +11,7 @@ from ural import is_url
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import StaleElementReferenceException
+from selenium.common.exceptions import StaleElementReferenceException, InvalidSessionIdException
 
 from common.config_manager import config
 from extensions.web_studies.selenium_scraper import SeleniumSearch
@@ -104,7 +104,7 @@ class AmazonProductSearch(SeleniumSearch):
         self.dataset.log('Query: %s' % str(query))
         depth = query.get('depth', 0)
         subpage_types = query.get('rec_type', [])
-        urls_to_collect = [{"url": AmazonProductSearch.normalize_amazon_links(url), 'current_depth': 0} for url in query.get('urls')]
+        urls_to_collect = [{"url": AmazonProductSearch.normalize_amazon_links(url), 'current_depth': 0, "retries":0} for url in query.get('urls')]
 
         # Do not scrape the same page twice
         collected_urls = set()
@@ -152,140 +152,154 @@ class AmazonProductSearch(SeleniumSearch):
                 "error": '',
             }
 
-            # Get the URL
-            success, errors = self.get_with_error_handling(url, max_attempts=2)
+            try:
+                # Get the URL
+                success, errors = self.get_with_error_handling(url, max_attempts=2)
 
-            # Collection timestamp
-            result['timestamp'] = int(datetime.datetime.now().timestamp())
-            collected_urls.add(url)
+                # Collection timestamp
+                result['timestamp'] = int(datetime.datetime.now().timestamp())
+                collected_urls.add(url)
 
-            # Check for 404 or other errors
-            detected_404 = self.check_for_404()
-            if detected_404:
-                result['error'] += self.driver.title.lower() + "\n"
-                success = False
-            if not success:
-                self.dataset.log(f"Failed to collect {url}: {errors}")
-                result['error'] += errors
-                result['detected_404'] = detected_404
-                yield result
-                continue
-
-            # Success; collect the final URL and load full page
-            result["final_url"] = self.driver.current_url
-            self.scroll_down_page_to_load(max_time=5)
-
-            # Check for potential detection
-            if any([detected_text in self.driver.page_source for detected_text in ["Enter the characters you see below", "Sorry, we just need to make sure you're not a robot."]]):
-                self.dataset.log("Detected potential CAPTCHA on %s" % url)
-                result['error'] += "CAPTCHA detected\n"
-
-            # Collect the product details
-            # These may change or not exist, but I would prefer to still collect them here if possible as we lose access to selenium later
-            # We can attempt to update them from the source via map_item later (e.g., if None, check the html)
-            title = self.driver.find_elements(By.XPATH, "//span[contains(@id, 'productTitle')]")
-            if title:
-                result['title'] = title[0].text
-            subtitle = self.driver.find_elements(By.XPATH, "//span[contains(@id, 'productSubtitle')]")
-            if subtitle:
-                result['subtitle'] = subtitle[0].text
-            byline = self.driver.find_elements(By.XPATH, "//div[contains(@id, 'bylineInfo')]")
-            if byline:
-                result["byline"] = byline[0].text
-            num_reviews = self.driver.find_elements(By.XPATH, "//a[contains(@id, 'acrCustomerReviewLink')]")
-            if num_reviews:
-                result["num_reviews"] = num_reviews[0].text
-            rating = self.driver.find_elements(By.XPATH, "//span[contains(@id, 'acrPopover')]")
-            if rating:
-                result["rating"] = rating[0].text
-            # badges
-            badges = self.driver.find_elements(By.XPATH, "//div[contains(@id, 'zg-badge-wrapper')]")
-            if badges:
-                result["badges"] = badges[0].text
-            # image
-            image_containers = self.driver.find_elements(By.XPATH, "//div[contains(@id, 'imageBlock_feature_div')]")
-            if image_containers:
-                for thumb in image_containers[0].find_elements(By.XPATH, ".//img"):
-                    if thumb.get_attribute("class") == "a-lazy-loaded":
-                        # Ignore the lazy loaded image
-                        continue
-                    result["thumbnail"] = thumb.get_attribute("src")
-                    break
-
-            # Collect the HTML and extract text
-            result['html'] = self.driver.page_source
-            result['body'] = self.scrape_beautiful_text(result['html'])
-
-            # Collect recommendations
-            carousels = self.driver.find_elements(By.CSS_SELECTOR, "div[class*=a-carousel-container]")
-            found_carousels = 0
-            for carousel in carousels:
-                heading = carousel.find_elements(By.XPATH, ".//h2[contains(@class, 'a-carousel-heading')]")
-                if not heading:
-                    # Not a recommendation carousel
+                # Check for 404 or other errors
+                detected_404 = self.check_for_404()
+                if detected_404:
+                    result['error'] += self.driver.title.lower() + "\n"
+                    success = False
+                if not success:
+                    self.dataset.log(f"Failed to collect {url}: {errors}")
+                    result['error'] += errors
+                    result['detected_404'] = detected_404
+                    yield result
                     continue
-                # self.dataset.log("Found carousel: %s" % heading[0].text)
-                # self.dataset.log("Carousel: %s" % carousel.get_attribute("innerHTML"))
-                # self.dataset.log("Carousel: %s" % carousel.text)
 
-                found_carousels += 1
-                heading_text = heading[0].text
-                result["recommendations"][heading_text] = []
+                # Success; collect the final URL and load full page
+                result["final_url"] = self.driver.current_url
+                self.scroll_down_page_to_load(max_time=5)
 
-                # Collect page numbers
-                current = carousel.find_element(By.XPATH, ".//span[contains(@class, 'a-carousel-page-current')]")
-                final = carousel.find_element(By.XPATH, ".//span[contains(@class, 'a-carousel-page-max')]")
-                current = int(current.text) if current.text else 1
-                final = int(final.text) if final.text else 1
-                failure_count = 0
+                # Check for potential detection
+                if any([detected_text in self.driver.page_source for detected_text in ["Enter the characters you see below", "Sorry, we just need to make sure you're not a robot."]]):
+                    self.dataset.log("Detected potential CAPTCHA on %s" % url)
+                    result['error'] += "CAPTCHA detected\n"
 
-                while current <= final:
-                    recs = carousel.find_elements(By.TAG_NAME, "li")
-                    recs_to_add = []
-                    stale = False
-                    for rec in recs:
-                        rec_link = rec.find_elements(By.CSS_SELECTOR, "a[class*=a-link-normal]")
-                        if rec_link:
-                            try:
-                                rec_link = rec_link[0].get_attribute("href")
-                            except StaleElementReferenceException:
-                                stale = True
+                # Collect the product details
+                # These may change or not exist, but I would prefer to still collect them here if possible as we lose access to selenium later
+                # We can attempt to update them from the source via map_item later (e.g., if None, check the html)
+                title = self.driver.find_elements(By.XPATH, "//span[contains(@id, 'productTitle')]")
+                if title:
+                    result['title'] = title[0].text
+                subtitle = self.driver.find_elements(By.XPATH, "//span[contains(@id, 'productSubtitle')]")
+                if subtitle:
+                    result['subtitle'] = subtitle[0].text
+                byline = self.driver.find_elements(By.XPATH, "//div[contains(@id, 'bylineInfo')]")
+                if byline:
+                    result["byline"] = byline[0].text
+                num_reviews = self.driver.find_elements(By.XPATH, "//a[contains(@id, 'acrCustomerReviewLink')]")
+                if num_reviews:
+                    result["num_reviews"] = num_reviews[0].text
+                rating = self.driver.find_elements(By.XPATH, "//span[contains(@id, 'acrPopover')]")
+                if rating:
+                    result["rating"] = rating[0].text
+                # badges
+                badges = self.driver.find_elements(By.XPATH, "//div[contains(@id, 'zg-badge-wrapper')]")
+                if badges:
+                    result["badges"] = badges[0].text
+                # image
+                image_containers = self.driver.find_elements(By.XPATH, "//div[contains(@id, 'imageBlock_feature_div')]")
+                if image_containers:
+                    for thumb in image_containers[0].find_elements(By.XPATH, ".//img"):
+                        if thumb.get_attribute("class") == "a-lazy-loaded":
+                            # Ignore the lazy loaded image
+                            continue
+                        result["thumbnail"] = thumb.get_attribute("src")
+                        break
+
+                # Collect the HTML and extract text
+                result['html'] = self.driver.page_source
+                result['body'] = self.scrape_beautiful_text(result['html'])
+
+                # Collect recommendations
+                carousels = self.driver.find_elements(By.CSS_SELECTOR, "div[class*=a-carousel-container]")
+                found_carousels = 0
+                for carousel in carousels:
+                    heading = carousel.find_elements(By.XPATH, ".//h2[contains(@class, 'a-carousel-heading')]")
+                    if not heading:
+                        # Not a recommendation carousel
+                        continue
+                    # self.dataset.log("Found carousel: %s" % heading[0].text)
+                    # self.dataset.log("Carousel: %s" % carousel.get_attribute("innerHTML"))
+                    # self.dataset.log("Carousel: %s" % carousel.text)
+
+                    found_carousels += 1
+                    heading_text = heading[0].text
+                    result["recommendations"][heading_text] = []
+
+                    # Collect page numbers
+                    current = carousel.find_element(By.XPATH, ".//span[contains(@class, 'a-carousel-page-current')]")
+                    final = carousel.find_element(By.XPATH, ".//span[contains(@class, 'a-carousel-page-max')]")
+                    current = int(current.text) if current.text else 1
+                    final = int(final.text) if final.text else 1
+                    failure_count = 0
+
+                    while current <= final:
+                        recs = carousel.find_elements(By.TAG_NAME, "li")
+                        recs_to_add = []
+                        stale = False
+                        for rec in recs:
+                            rec_link = rec.find_elements(By.CSS_SELECTOR, "a[class*=a-link-normal]")
+                            if rec_link:
+                                try:
+                                    rec_link = rec_link[0].get_attribute("href")
+                                except StaleElementReferenceException:
+                                    stale = True
+                                    break
+                                stale = 0
+                                rec_html = rec.get_attribute("innerHTML")
+                                rec_data = {
+                                    "text": self.scrape_beautiful_text(rec_html) if rec_html else [""],
+                                    "original_link": rec_link,
+                                    "normalized_link": AmazonProductSearch.normalize_amazon_links(rec_link)
+                                }
+                                recs_to_add.append(rec_data)
+                            else:
+                                # blank rec; likely all recs have been collected
+                                continue
+
+                        if stale:
+                            # Stale element; try again
+                            failure_count += 1
+                            if failure_count >= 3:
+                                # Too many failures; break
+                                self.dataset.log(f"Unable to collect all recommendations from carousel {heading_text} on {url}")
+                                self.log.warning(f"Amazon product collector: Stale carousel element detected too many times; unable to collect\nDataset: {self.dataset.key}\nURL: {url}\nCarousel: {heading_text}")
                                 break
-                            stale = 0
-                            rec_html = rec.get_attribute("innerHTML")
-                            rec_data = {
-                                "text": self.scrape_beautiful_text(rec_html) if rec_html else [""],
-                                "original_link": rec_link,
-                                "normalized_link": AmazonProductSearch.normalize_amazon_links(rec_link)
-                            }
-                            recs_to_add.append(rec_data)
-                        else:
-                            # blank rec; likely all recs have been collected
                             continue
 
-                    if stale:
-                        # Stale element; try again
-                        failure_count += 1
-                        if failure_count >= 3:
-                            # Too many failures; break
-                            self.dataset.log(f"Unable to collect all recommendations from carousel {heading_text} on {url}")
-                            self.log.warning(f"Amazon product collector: Stale carousel element detected too many times; unable to collect\nDataset: {self.dataset.key}\nURL: {url}\nCarousel: {heading_text}")
-                            break
-                        continue
+                        # Add recs to the list
+                        result["recommendations"][heading_text] += recs_to_add
 
-                    # Add recs to the list
-                    result["recommendations"][heading_text] += recs_to_add
+                        # Check if there is a next page and click if so
+                        next_button = carousel.find_elements(By.XPATH, ".//div[contains(@class, 'a-carousel-right')]")
+                        if next_button and current < final:
+                            next_button[0].find_element(By.XPATH, ".//span[contains(@class, 'a-button-inner')]").click()
+                            WebDriverWait(carousel, 10).until(EC.text_to_be_present_in_element(
+                                (By.XPATH, ".//span[contains(@class, 'a-carousel-page-current')]"), str(current + 1)))
+                            # even with the Wait for page to update, the actual recs may take a bit longer
+                            time.sleep(.5)
 
-                    # Check if there is a next page and click if so
-                    next_button = carousel.find_elements(By.XPATH, ".//div[contains(@class, 'a-carousel-right')]")
-                    if next_button and current < final:
-                        next_button[0].find_element(By.XPATH, ".//span[contains(@class, 'a-button-inner')]").click()
-                        WebDriverWait(carousel, 10).until(EC.text_to_be_present_in_element(
-                            (By.XPATH, ".//span[contains(@class, 'a-carousel-page-current')]"), str(current + 1)))
-                        # even with the Wait for page to update, the actual recs may take a bit longer
-                        time.sleep(.5)
+                        current += 1
 
-                    current += 1
+            except InvalidSessionIdException as e:
+                if url_obj["retries"] >= 3:
+                    self.dataset.log(f"Firefox error; too many retries; skipping {url}\n{e}")
+                    result['error'] += "Too many retries\n"
+                    yield result
+                else:
+                    self.dataset.log(f"Firefox error; restarting browser and trying again\n{e}")
+                    self.restart_selenium()
+                    url_obj["retries"] += 1
+                    urls_to_collect.insert(0, url_obj)
+                continue
+
 
             if found_carousels == 0:
                 # No carousels found, but some were present
@@ -311,7 +325,7 @@ class AmazonProductSearch(SeleniumSearch):
                 additional_subpages = set([rec["normalized_link"] for rec in additional_subpages])
                 num_urls += len(additional_subpages)
                 self.dataset.update_status(f"Adding {len(additional_subpages)} additional subpages to collect")
-                urls_to_collect += [{'url': url, 'current_depth': current_depth + 1} for url in additional_subpages if url not in collected_urls]
+                urls_to_collect += [{'url': url, 'current_depth': current_depth + 1, "retries":0} for url in additional_subpages if url not in collected_urls]
 
             urls_collected += 1
             yield result
