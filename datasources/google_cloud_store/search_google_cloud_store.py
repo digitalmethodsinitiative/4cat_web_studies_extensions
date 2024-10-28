@@ -56,7 +56,7 @@ class SearchGoogleCloudStore(SeleniumSearch):
                 "type": UserInput.OPTION_CHOICE,
                 "help": "Query Type",
                 "options": {
-                    # "search": "Search",
+                    "search": "Search",
                     "categories": "Categories",
                 },
                 "default": "categories"
@@ -109,115 +109,136 @@ class SearchGoogleCloudStore(SeleniumSearch):
             self.dataset.update_status("Selenium not available; unable to collect from Google Cloud Marketplace.", is_final=True)
             return
 
-        method = self.parameters.get("method")
-        if method == "categories":
-            categories = self.parameters.get("categories", [])
-            if not categories:
-                raise ProcessorException("No category selected")
-        else:
-            raise ProcessorException("Invalid method")
-
+        method = query.get("method")
+        queries = query.get("query", []) + query.get("categories", [])
         max_results = self.parameters.get("amount", 40)
 
+        # Identifiers depend on method
         if method == "categories":
-            for category in categories:
-                collected = 0
-                known_categories = self.config.get("cache.google_cloud.categories", {})
-                current_category = known_categories.get(category, {})
-                self.dataset.update_status(f"Processing category {current_category.get('name')}")
-
-                success, errors = self.get_with_error_handling(current_category.get("link"))
-                if not success:
-                    self.dataset.log(f"Failed to fetch Google Cloud Store: {errors}")
-                    self.dataset.update_status("Unable to connect to Google Cloud Store.", is_final=True)
-                    return
-
-                # Ensure page is loaded
-                if not self.check_page_is_loaded():
-                    self.dataset.update_status("Google Cloud Store did not load after 60 seconds; try again later.",
-                                               is_final=True)
-                    return
-                self.scroll_down_page_to_load(60)
-                collected_at = datetime.now()
-
-                try:
-                    WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.CLASS_NAME, "cfc-shelf-header")))
-                    results_header = self.driver.find_elements(By.CLASS_NAME, "cfc-shelf-header")
-                except TimeoutException:
-                    results_header = None
-                if not results_header:
-                    # Unknown number results
-                    self.log.warning(f"Unable to parse Google Cloud results; page format may have changed")
-                    results_count = None
-                else:
-                    results_count = results_header[0].text.replace(' results', '')
-                    self.dataset.log(f"Found {results_count} total results for category {current_category.get('name')}")
-                    try:
-                        results_count = int(results_count)
-                    except ValueError:
-                        results_count = None
-
-                # Collect product search result blocks
-                WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, "cfc-result-card")))
-                results = self.driver.find_elements(By.TAG_NAME, "cfc-result-card")
-                if not results:
-                    self.log.warning(f"Unable to parse results for category {current_category.get('name')}")
-                    self.dataset.update_status("No results found", is_final=True)
-                    return
-
-                while collected < max_results:
-                    for i, result in enumerate(results):
-                        collected += 1
-                        title_block = result.find_elements(By.XPATH, ".//*[@role='heading']")
-                        product_link_block = result.find_elements(By.XPATH, ".//a")
-                        sub_title_block = result.find_elements(By.CLASS_NAME, "cfc-result-card-subtitle")
-                        description_block = result.find_elements(By.CLASS_NAME, "cfc-result-card-description")
-                        type_block = result.find_elements(By.XPATH, ".//dt[contains(text(), 'Type ')]/../dd")
-                        thumb_block = result.find_elements(By.XPATH, ".//img")
-
-                        yield {
-                            "collected_at": collected_at.strftime("%Y-%m-%d %H:%M:%S"),
-                            "category": current_category.get("name"),
-                            "rank": collected,
-                            "title": title_block[0].text if title_block else None,
-                            "subtitle": sub_title_block[0].text if sub_title_block else None,
-                            "link": product_link_block[0].get_attribute("href") if product_link_block else None,
-                            "description": description_block[0].text if description_block else None,
-                            "type": type_block[0].text if type_block else None,
-                            "thumbnail": thumb_block[0].get_attribute("src") if thumb_block else None,
-                            "html": result.get_attribute("outerHTML")
-                        }
-                        self.dataset.update_status(f"Collected {collected} results")
-
-                    if collected >= max_results or (results_count and collected >= results_count):
-                        break
-
-                    # Check if there are more results
-                    # Note: could also use "page=" in URL though not actual URL query param
-                    next_button = self.driver.find_elements(By.CLASS_NAME, "cfc-table-pagination-nav-button-next")
-                    if not next_button:
-                        self.log.warning(f"Google Cloud page may have changed; unable to find next button")
-                        self.dataset.update_status(f"Unable to continue to next page for category {current_category.get('name')}")
-                        break
-                    # Click next button
-                    next_button[0].click()
-                    # Ensure old results are gone
-                    WebDriverWait(self.driver, 5).until(staleness_of(results[0]))
-                    # Wait for new results
-                    WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, "cfc-result-card")))
-                    results = self.driver.find_elements(By.TAG_NAME, "cfc-result-card")
-                    if not results:
-                        self.log.warning(f"Unable to parse results for category {current_category.get('name')}")
-                        self.dataset.update_status(f"Unable to continue to next page for category {current_category.get('name')}")
-                        break
-
-
+            result_total_identifier = (By.CLASS_NAME, "cfc-shelf-header")
+            result_blocks_identifier = (By.TAG_NAME, "cfc-result-card")
+            title_identifier = (By.XPATH, ".//*[@role='heading']")
+            sub_title_identifier = (By.CLASS_NAME, "cfc-result-card-subtitle")
+            description_identifier = (By.CLASS_NAME, "cfc-result-card-description")
         elif method == "search":
-            raise ProcessorException("Search method not implemented")
+            result_total_identifier = (By.TAG_NAME, "h1")
+            result_blocks_identifier = (By.TAG_NAME, "mp-search-results-list-item")
+            title_identifier = (By.TAG_NAME, "h3")
+            sub_title_identifier = (By.TAG_NAME, "h4")
+            description_identifier = (By.TAG_NAME, "p")
         else:
             raise ProcessorException("Invalid method")
 
+        for query in queries:
+            collected = 0
+            if method == "categories":
+                known_categories = self.config.get("cache.google_cloud.categories", {})
+                current_category = known_categories.get(query, {})
+                query = current_category.get("name")
+                url = current_category.get("link")
+            elif method == "search":
+                url = f"{SearchGoogleCloudStore.base_url}/browse?q={urllib.parse.quote_plus(query)}"
+            else:
+                raise ProcessorException("Invalid method")
 
+            self.dataset.update_status(f"Processing query {query}")
+
+            success, errors = self.get_with_error_handling(url)
+            if not success:
+                self.dataset.log(f"Failed to fetch Google Cloud Store: {errors}")
+                self.dataset.update_status("Unable to connect to Google Cloud Store.", is_final=True)
+                return
+
+            # Ensure page is loaded
+            if not self.check_page_is_loaded():
+                self.dataset.update_status("Google Cloud Store did not load after 60 seconds; try again later.",
+                                           is_final=True)
+                return
+            self.scroll_down_page_to_load(60)
+            collected_at = datetime.now()
+
+            # Get total results
+            try:
+                WebDriverWait(self.driver, 5).until(EC.presence_of_element_located(result_total_identifier))
+                results_header = self.driver.find_elements(*result_total_identifier)
+            except TimeoutException:
+                results_header = None
+            if not results_header:
+                # Unknown number results
+                self.log.warning(f"Unable to parse Google Cloud results; page format may have changed")
+                results_count = None
+            else:
+                results_count = results_header[0].text.replace(' results', '').replace(",", "")
+                self.dataset.log(f"Found {results_count} total results for {query}")
+                try:
+                    results_count = int(results_count)
+                except ValueError:
+                    results_count = None
+
+            # Collect product search result blocks
+            WebDriverWait(self.driver, 5).until(EC.presence_of_element_located(result_blocks_identifier))
+            results = self.driver.find_elements(*result_blocks_identifier)
+            if not results:
+                self.log.warning(f"Unable to parse results for query {query}")
+                self.dataset.update_status("No results found", is_final=True)
+                return
+
+            while collected < max_results:
+                for i, result in enumerate(results):
+                    collected += 1
+                    title_block = result.find_elements(*title_identifier)
+                    product_link_block = result.find_elements(By.XPATH, ".//a")
+                    sub_title_block = result.find_elements(*sub_title_identifier)
+                    description_block = result.find_elements(*description_identifier)
+                    thumb_block = result.find_elements(By.XPATH, ".//img")
+
+                    if method == "categories":
+                        type_block = result.find_elements(By.XPATH, ".//dt[contains(text(), 'Type ')]/../dd")
+                        sub_title_text = sub_title_block[0].text if sub_title_block else None
+                    elif method == "search":
+                        if sub_title_block:
+                            type_block = sub_title_block[0].find_elements(By.TAG_NAME, "span")
+                            if type_block:
+                                sub_title_text = sub_title_block[0].text.replace(type_block[0].text, "") if sub_title_block else None
+                        else:
+                            type_block = None
+                            sub_title_text = None
+
+                    yield {
+                        "collected_at": collected_at.strftime("%Y-%m-%d %H:%M:%S"),
+                        "query": query,
+                        "rank": collected,
+                        "title": title_block[0].text if title_block else None,
+                        "subtitle": sub_title_text,
+                        "link": product_link_block[0].get_attribute("href") if product_link_block else None,
+                        "description": description_block[0].text if description_block else None,
+                        "type": type_block[0].text if type_block else None,
+                        "thumbnail": thumb_block[0].get_attribute("src") if thumb_block else None,
+                        "html": result.get_attribute("outerHTML")
+                    }
+                    self.dataset.update_status(f"Collected {collected} results")
+
+                if collected >= max_results or (results_count and collected >= results_count):
+                    break
+
+                # Check if there are more results
+                # Note: could also use "page=" in URL though not actual URL query param
+                next_button = self.driver.find_elements(By.CLASS_NAME, "cfc-table-pagination-nav-button-next")
+                if not next_button:
+                    self.log.warning(f"Google Cloud page may have changed; unable to find next button")
+                    self.dataset.update_status(f"Unable to continue to next page for query {query}")
+                    break
+                # Click next button
+                next_button[0].click()
+                # Ensure old results are gone
+                WebDriverWait(self.driver, 5).until(staleness_of(results[0]))
+                # Wait for new results
+                WebDriverWait(self.driver, 5).until(EC.presence_of_element_located(result_blocks_identifier))
+                results = self.driver.find_elements(*result_blocks_identifier)
+                if not results:
+                    self.log.warning(f"Unable to parse results for query {query}")
+                    self.dataset.update_status(f"Unable to continue to next page for query {query}")
+                    break
 
     def get_app_details(self, app):
         """
@@ -239,8 +260,28 @@ class SearchGoogleCloudStore(SeleniumSearch):
         :param User user:  User object of user who has submitted the query
         :return dict:  Safe query parameters
         """
+        method = query.get("method")
+        categories = []
+        queries = []
+        if method == "categories":
+            categories = query.get("categories", [])
+            if not categories:
+                raise QueryParametersException("No category selected")
+        elif method == "search":
+            queries = query.get("query", "")
+            if not queries.strip():
+                raise QueryParametersException("No search query provided")
+
+            queries = queries.replace("\n", ",").split(",")
+        else:
+            raise ProcessorException("Invalid method")
            
-        return query
+        return {
+            "method": method,
+            "categories": categories,
+            "query": queries,
+            "amount": int(query.get("amount", 40)),
+        }
 
 
     @staticmethod
