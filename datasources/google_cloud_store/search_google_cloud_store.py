@@ -367,6 +367,14 @@ class GoogleCloudStoreCategories(BasicWorker):
             raise ProcessorException("Failed to find category options")
 
         cat_box = possible_cat_boxes[0]
+        num_cats = 0
+        while True:
+            time.sleep(1)
+            loaded_cats = len(cat_box.find_elements(By.CSS_SELECTOR, "a"))
+            if loaded_cats == num_cats or loaded_cats == 0:
+                break
+            num_cats = loaded_cats
+
         category_filters = {}
         for link in cat_box.find_elements(By.CSS_SELECTOR, "a"):
             cat_name = link.text.split("\n")[0] # remove extra text (i.e., (num of items))
