@@ -370,9 +370,10 @@ class GoogleCloudStoreCategories(BasicWorker):
         category_filters = {}
         for link in cat_box.find_elements(By.CSS_SELECTOR, "a"):
             cat_name = link.text.split("\n")[0] # remove extra text (i.e., (num of items))
-            category_filters[cat_name.replace(" ", "_").lower()] = {
-                "name": cat_name,
-                "link": link.get_attribute("href")
-            }
+            if cat_name:
+                category_filters[cat_name.replace(" ", "_").lower()] = {
+                    "name": cat_name,
+                    "link": link.get_attribute("href")
+                }
 
         return category_filters
