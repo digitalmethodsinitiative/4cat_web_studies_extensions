@@ -234,6 +234,8 @@ class SearchGoogleCloudStore(SeleniumSearch):
                 WebDriverWait(self.driver, 5).until(staleness_of(results[0]))
                 # Wait for new results
                 WebDriverWait(self.driver, 5).until(EC.presence_of_element_located(result_blocks_identifier))
+                # Update collected time
+                collected_at = datetime.now()
                 results = self.driver.find_elements(*result_blocks_identifier)
                 if not results:
                     self.log.warning(f"Unable to parse results for query {query}")
