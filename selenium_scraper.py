@@ -693,8 +693,16 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
         except ProcessorException as e:
             self.quit_selenium()
             raise e
+
         # Returns to default position; i.e., 'data:,'
-        self.reset_current_page()
+        try:
+            self.reset_current_page()
+        except InvalidSessionIdException as e:
+            # Webdriver unable to connect to browser
+            self.log.error(f"InvalidSessionIdException: {e}")
+            self.quit_selenium()
+            raise ProcessorException("Selenium or browser unable to start; please wait and try again later")
+
         # Sets timeout to 60; can be updated later if desired
         self.set_page_load_timeout()
 
