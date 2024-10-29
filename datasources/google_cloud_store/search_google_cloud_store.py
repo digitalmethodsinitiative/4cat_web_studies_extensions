@@ -19,7 +19,7 @@ class SearchGoogleCloudStore(SeleniumSearch):
     """
     type = "google-cloud-store-search"  # job ID
     category = "Search"  # category
-    title = "Google Cloud Product Store Search"  # title displayed in UI
+    title = "Google Cloud Marketplace Search"  # title displayed in UI
     description = "Query Google Cloud's product store to retrieve data on applications and developers"  # description displayed in UI
     extension = "ndjson"  # extension of result file, used internally and in UI
     is_local = False  # Whether this datasource is locally scraped

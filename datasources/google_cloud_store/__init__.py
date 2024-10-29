@@ -9,4 +9,4 @@ from common.lib.helpers import init_datasource
 
 # Internal identifier for this data source
 DATASOURCE = "google-cloud-store"
-NAME = "Google Cloud Product Store"
+NAME = "Google Cloud Marketplace"
