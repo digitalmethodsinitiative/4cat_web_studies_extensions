@@ -98,6 +98,7 @@ class SearchWithSelenium(SeleniumSearch):
                 "detected_404": None,
                 "timestamp": None,
                 "error": '',
+                "embedded_iframes": [],
             }
 
             attempts = 0
@@ -143,14 +144,43 @@ class SearchWithSelenium(SeleniumSearch):
                 result['detected_404'] = scraped_page.get('detected_404')
                 result['timestamp'] = int(datetime.datetime.now().timestamp())
                 result['error'] = scraped_page.get('error') # This should be None...
-                result['selenium_links'] = scraped_page.get('links') if scraped_page.get('links') else scraped_page.get('collect_links_error')
+                result['selenium_links'] = scraped_page.get('links', [])
 
                 # Collect links from page source
                 domain = urlparse(url).scheme + '://' + urlparse(url).netloc
                 num_of_links, links = self.get_beautiful_links(scraped_page['page_source'], domain)
                 result['scraped_links'] = links
 
-                # Check if additional subpages need to be scraped
+                # Scrape iframes as well
+                # These could be visible on the page, but are not in the page source
+                # TODO: Selenium can select iframes and pull the source that way; this may be better than the below method
+                iframe_links = self.get_beautiful_iframe_links(scraped_page['page_source'])
+                while iframe_links:
+                    link = iframe_links.pop(0)
+                    if not link:
+                        # Unable to extract link to iframe source
+                        continue
+                    if not is_url(link):
+                        self.dataset.log(f"Skipping iframe page source found on {scraped_page.get('final_url')} due to malformed URL: {link}")
+                        continue
+
+                    result['embedded_iframes'].append(link)
+                    try:
+                        iframe_page = self.simple_scrape_page(link, extract_links=True)
+                    except Exception as e:
+                        self.dataset.log(f"Unable to collect iframe page source found on {scraped_page.get('final_url')}: {link} with error: {str(e)}")
+                        continue
+
+                    if iframe_page:
+                        result['body'] += ['\n'] + self.scrape_beautiful_text(iframe_page['page_source'])
+                        result['html'] += '\n' + iframe_page['page_source']
+                        result['selenium_links'] += iframe_page.get('links', [])
+                        # Collect links from page source
+                        domain = urlparse(link).scheme + '://' + urlparse(link).netloc
+                        num_of_links, links = self.get_beautiful_links(iframe_page['page_source'], domain)
+                        result['scraped_links'] += links
+
+                # Check if additional subpages need to be crawled
                 if num_additional_subpages > 0:
                     # Check if any link from base_url are available
                     if not url_obj['subpage_links']:
@@ -173,21 +203,6 @@ class SearchWithSelenium(SeleniumSearch):
                                 'subpage_links':links,
                             })
                             break
-
-                # Scrape iframes as well
-                # TODO: incorporate them into the original page?
-                iframe_links = self.get_beautiful_iframe_links(scraped_page['page_source'])
-                while iframe_links:
-                    link = iframe_links.pop(0)
-                    if self.check_exclude_link(link, scraped_urls):
-                        num_urls += 1
-                        # Add it to be scraped next
-                        urls_to_scrape.insert(0, {
-                            'url': link,
-                            'base_url': url_obj['base_url'],
-                            'num_additional_subpages': num_additional_subpages, # Do not consider this a "link" since it should be imbedded
-                            'subpage_links': url_obj['subpage_links'] if url_obj['subpage_links'] else [], # if already subpage_links use those, else allow for scraping iframe links
-                        })
 
                 yield result
 

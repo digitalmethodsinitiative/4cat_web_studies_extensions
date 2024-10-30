@@ -151,17 +151,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             }
 
         if extract_links:
-            try:
-                links = self.collect_links()
-            except Exception as e:
-                try:
-                    links = self.collect_links()
-                except Exception as e:
-                    if hasattr(self, 'dataset'):
-                        self.dataset.log('Error collecting links for url %s: %s' % (url, str(e)))
-                    links = None
-                    result['collect_links_error'] = e
-            result['links'] = links
+            result['links'] = self.collect_links()
 
         return result
 
@@ -521,7 +511,17 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         iframes = soup.findAll('iframe')
         if iframes:
             for iframe in iframes:
-                iframe_links.append(iframe.get('src'))
+                if iframe.get('src'):
+                    iframe_links.append(iframe.get('src'))
+                elif iframe.get('data-src'):
+                    iframe_links.append(iframe.get('data-src'))
+                elif iframe.get('data-url'):
+                    # If no src, then it is likely a data-url
+                    iframe_links.append('data-url')
+                else:
+                    # unknown iframe
+                    # TODO: add logging? in this staticmethod...
+                    pass
         return iframe_links
 
     def scroll_down_page_to_load(self, max_time=None):
