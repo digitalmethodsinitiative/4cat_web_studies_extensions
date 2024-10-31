@@ -38,7 +38,7 @@ class SearchAwsStore(SeleniumSearch):
             "help": "AWS Query Options Updated At",
             "tooltip": "automatically updated",
             "default": 0,
-            "coerce_type": int
+            "coerce_type": float
         }
     }
 

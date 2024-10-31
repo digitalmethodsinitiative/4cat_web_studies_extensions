@@ -38,7 +38,7 @@ class SearchAzureStore(Search):
             "help": "Azure Categories Updated At",
             "tooltip": "automatically updated",
             "default": 0,
-            "coerce_type": int
+            "coerce_type": float
         }
     }
 

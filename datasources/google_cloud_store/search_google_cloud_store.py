@@ -40,7 +40,7 @@ class SearchGoogleCloudStore(SeleniumSearch):
             "help": "Google Cloud Product Categories Updated At",
             "tooltip": "automatically updated",
             "default": 0,
-            "coerce_type": int
+            "coerce_type": float
         }
     }
 
