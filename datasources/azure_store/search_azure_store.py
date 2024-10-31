@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 from common.config_manager import config
 
+from backend.lib.worker import BasicWorker
 from backend.lib.search import Search
 from common.lib.exceptions import ProcessorInterruptedException, ProcessorException
 from common.lib.item_mapping import MappedItem
@@ -87,7 +88,7 @@ class SearchAzureStore(Search):
                 "tooltip": "If enabled, the full details of each application will be included in the output.",
             },
         }
-        categories = cls.get_categories()
+        categories = config.get("cache.azure.categories", {}, user=user)
         if categories:
             formatted_categories = {f"{key}": f"{cat.get('cat_title')} - {cat.get('sub_title')}" for key, cat in
                                     categories.items()}
@@ -338,18 +339,34 @@ class SearchAzureStore(Search):
 
         return MappedItem(formatted_item)
 
-    @classmethod
-    def get_categories(cls, store="en-us", force_update=False):
+    @staticmethod
+    def parse_azure_json(soup):
         """
-        Get categories from Azure Store
+        Parse JSON object from Azure Store
         """
-        last_updated = config.get("cache.azure.categories_updated_at", 0)
-        if (datetime.datetime.fromtimestamp(last_updated) > datetime.datetime.now() - datetime.timedelta(days=1)) and not force_update:
-            # Do not re-fetch unless forced or older than one day
-            return config.get("cache.azure.categories")
+        # JSON object is stored in a script tag
+        scripts = soup.find_all("script")
+        for script in scripts:
+            if "window.__INITIAL_STATE__" in str(script):
+                return json.loads(str(script).split("window.__INITIAL_STATE__ =")[1].rstrip("</script>").strip())
+        return None
 
-        config.db.log.info("Fetching categories from Azure Store")
-        categories_url = cls.base_url + f"/{store}/marketplace/apps"
+
+class AzureCategories(BasicWorker):
+    """
+    Collect Azure Store categories and store them in database
+    """
+    type = "azure-store-category-collector"  # job ID
+
+    # Run every day to update categories
+    ensure_job = {"remote_id": "azure-store-category-collector", "interval": 86400}
+
+    def work(self):
+        """
+        Collect Azure Store categories and store them in database
+        """
+        # Collecting from the US store
+        categories_url = SearchAzureStore.base_url + f"/en-us/marketplace/apps"
         try:
             response = requests.get(categories_url, timeout=30)
         except requests.exceptions.RequestException as e:
@@ -360,7 +377,7 @@ class SearchAzureStore(Search):
         soup = BeautifulSoup(response.content, "html.parser")
 
         # Only main categories are loaded in HTML; we can extract more from a JSON object
-        json_data = cls.parse_azure_json(soup)
+        json_data = SearchAzureStore.parse_azure_json(soup)
         category_map = None
         if json_data:
             category_map = {}
@@ -374,19 +391,7 @@ class SearchAzureStore(Search):
                     sub_key = sub_cat.get("urlKey")
                     # We only pass the key to the backend; so make a unique key that can be parsed (otherwise we could re-request)
                     category_map[main_key + "_--_" + sub_key] = {"cat_key": main_key, "cat_title": cat_title,
-                                                              "sub_key": sub_key, "sub_title": sub_title}
+                                                                 "sub_key": sub_key, "sub_title": sub_title}
         config.set("cache.azure.categories", category_map)
         config.set("cache.azure.categories_updated_at", datetime.datetime.now().timestamp())
-        return category_map
-
-    @staticmethod
-    def parse_azure_json(soup):
-        """
-        Parse JSON object from Azure Store
-        """
-        # JSON object is stored in a script tag
-        scripts = soup.find_all("script")
-        for script in scripts:
-            if "window.__INITIAL_STATE__" in str(script):
-                return json.loads(str(script).split("window.__INITIAL_STATE__ =")[1].rstrip("</script>").strip())
-        return None
+        self.log.info(f"Collected category options ({len(category_map)}) from Azure Store")
