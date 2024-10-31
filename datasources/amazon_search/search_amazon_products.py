@@ -30,16 +30,22 @@ class AmazonProductSearch(SeleniumSearch):
     extension = "ndjson"
 
     # Known carousels to collect recommendations
-    # All carousels will be collected, but only these will but used to columns (via map_item) and as depth crawl options
-    # {column_name: known_carousel_name}
-    known_carousels = {
-        "also_bought": "Customers who bought this item also bought",
-        "also_viewed": "Customers who viewed this also viewed",
-        "related_products": "Products related to this item",
-        "browsing_history_viewed": "Customers who viewed items in your browsing history also viewed",
-        "bought_after_viewing": "What do customers buy after viewing this item?",
-        "similar_ship_close": "Similar items that ship from close to you",
-        "all_recs": "All Recommendations", # SPECIAL type used to crawl all recommendations
+    config = {
+        "cache.amazon.carousels": {
+            "type": UserInput.OPTION_TEXT_JSON,
+            "help": "Amazon Carousels",
+            "tooltip": "Automatically updated when new carousels are detected",
+            "default": [
+                "Customers who bought this item also bought",
+                "Customers who viewed this also viewed",
+                "Products related to this item",
+                "Customers who viewed items in your browsing history also viewed",
+                "What do customers buy after viewing this item?",
+                "Similar items that ship from close to you",
+                "All Recommendations", # SPECIAL type used to crawl all recommendations
+             ],
+            "indirect": True
+        },
     }
 
     @classmethod
@@ -70,7 +76,7 @@ class AmazonProductSearch(SeleniumSearch):
             "rec_type": {
                 "type": UserInput.OPTION_MULTI_SELECT,
                 "help": "Recommended products to collect.",
-                "options": AmazonProductSearch.known_carousels,
+                "options": {k:k for k in config.get("cache.amazon.carousels", [], user=user)},
                 "default": [],
                 "tooltip": "Select the types of recommended products to additionally collect. If none are selected, only the provided urls will be collected. If \"All Recommendations\" is selected, all recommended products will be collected regardless of other selections."
             },
@@ -105,6 +111,10 @@ class AmazonProductSearch(SeleniumSearch):
         depth = query.get('depth', 0)
         subpage_types = query.get('rec_type', [])
         urls_to_collect = [{"url": AmazonProductSearch.normalize_amazon_links(url), 'current_depth': 0, "retries":0} for url in query.get('urls')]
+
+        # Load known carousels (load into memory to avoid repeated database calls)
+        known_carousels = self.config.get("cache.amazon.carousels", [])
+        added_carousels = set() # If we have already added a carousel, do not add it again
 
         # Do not scrape the same page twice
         collected_urls = set()
@@ -279,6 +289,12 @@ class AmazonProductSearch(SeleniumSearch):
 
                         # Add recs to the list
                         result["recommendations"][heading_text] += recs_to_add
+                        # Add carousels to the list of known carousels
+                        if heading_text not in known_carousels and heading_text not in added_carousels:
+                            known_carousels.append(heading_text)
+                            added_carousels.add(heading_text)
+                            # Update the db
+                            self.config.set("cache.amazon.carousels", known_carousels)
 
                         # Check if there is a next page and click if so
                         next_button = carousel.find_elements(By.XPATH, ".//div[contains(@class, 'a-carousel-right')]")
@@ -314,15 +330,14 @@ class AmazonProductSearch(SeleniumSearch):
             if depth > 0 and result["recommendations"] and current_depth < depth:
                 # Collect additional subpages
                 additional_subpages = []
-                if "all_recs" in subpage_types:
+                if "All Recommendations" in subpage_types:
                     # Collect all types
                     for rec_links in result["recommendations"].values():
                         additional_subpages += rec_links
                 else:
                     for rec_type in subpage_types:
-                        full_rec_type = AmazonProductSearch.known_carousels.get(rec_type, None)
-                        if full_rec_type in result["recommendations"]:
-                            additional_subpages += result["recommendations"][full_rec_type]
+                        if rec_type in result["recommendations"]:
+                            additional_subpages += result["recommendations"][rec_type]
 
                 # Remove duplicates
                 additional_subpages = set([rec["normalized_link"] for rec in additional_subpages])
@@ -348,9 +363,10 @@ class AmazonProductSearch(SeleniumSearch):
         # Convert the recommendations to comma-separated strings
         recommendations = page_result.pop("recommendations")
         page_result["rec_types_displayed"] = ", ".join(recommendations.keys())
-        page_result["all_recs"] = ""
         # Add known carousels as columns
-        [page_result.update({column_name: ""}) for column_name in AmazonProductSearch.known_carousels.values()]
+        page_result["All Recommendations"] = ""
+        known_carousels = config.get("cache.amazon.carousels", [])
+        [page_result.update({column_name: ""}) for column_name in known_carousels]
         rec_type = None
 
         # Replace commas in the title; this is annoying but most of our processors simply split on commas instead of taking advantage of JSONs and lists
@@ -383,9 +399,9 @@ class AmazonProductSearch(SeleniumSearch):
                             return rec_text[2].replace(",", " ")
                     return first_text
 
-            # Add to all_recs column
-            page_result["all_recs"] += (", ".join(map(_get_rec_title, rec_group)) + "; ")
-            if column_name in AmazonProductSearch.known_carousels.values():
+            # Add to All Recommendations column
+            page_result["All Recommendations"] += (", ".join(map(_get_rec_title, rec_group)) + "; ")
+            if column_name in known_carousels:
                 # We cannot add all the recommendation groups as columns as they are dynamic and may change by item
                 page_result[column_name] = ", ".join(map(_get_rec_title, rec_group))
 
