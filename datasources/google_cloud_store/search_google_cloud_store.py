@@ -131,6 +131,9 @@ class SearchGoogleCloudStore(SeleniumSearch):
             raise ProcessorException("Invalid method")
 
         for query in queries:
+            if self.interrupted:
+                raise ProcessorInterruptedException("Interrupted while collecting Google Cloud Store queries")
+
             collected = 0
             if method == "categories":
                 known_categories = self.config.get("cache.google_cloud.categories", {})
@@ -186,6 +189,9 @@ class SearchGoogleCloudStore(SeleniumSearch):
 
             while collected < max_results:
                 for i, result in enumerate(results):
+                    if self.interrupted:
+                        raise ProcessorInterruptedException("Interrupted while collecting Google Cloud Store results")
+
                     collected += 1
                     title_block = result.find_elements(*title_identifier)
                     product_link_block = result.find_elements(By.XPATH, ".//a")

@@ -114,9 +114,9 @@ class AmazonProductSearch(SeleniumSearch):
 
         while urls_to_collect:
             if self.interrupted:
-                raise ProcessorInterruptedException("Interrupted while scraping urls from the Web Archive")
-                # Get the next URL to collect
+                raise ProcessorInterruptedException("Interrupted while collecting Amazon product URLs")
 
+            # Get the next URL to collect
             url_obj = urls_to_collect.pop(0)
             url = url_obj['url']
             current_depth = url_obj['current_depth']
@@ -245,6 +245,9 @@ class AmazonProductSearch(SeleniumSearch):
                         recs_to_add = []
                         stale = False
                         for rec in recs:
+                            if self.interrupted:
+                                raise ProcessorInterruptedException("Interrupted while collecting Amazon product recommendations")
+
                             rec_link = rec.find_elements(By.CSS_SELECTOR, "a[class*=a-link-normal]")
                             if rec_link:
                                 try:
