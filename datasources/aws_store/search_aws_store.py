@@ -33,14 +33,16 @@ class SearchAwsStore(SeleniumSearch):
             "type": UserInput.OPTION_TEXT_JSON,
             "help": "AWS Query Options",
             "tooltip": "automatically updated",
-            "default": {}
+            "default": {},
+            "indirect": True
         },
         "cache.aws.query_options_updated_at": {
             "type": UserInput.OPTION_TEXT,
             "help": "AWS Query Options Updated At",
             "tooltip": "automatically updated",
             "default": 0,
-            "coerce_type": float
+            "coerce_type": float,
+            "indirect": True
         }
     }
 

@@ -31,14 +31,16 @@ class SearchAzureStore(Search):
             "type": UserInput.OPTION_TEXT_JSON,
             "help": "Azure Categories",
             "tooltip": "automatically updated",
-            "default": {}
+            "default": {},
+            "indirect": True
         },
         "cache.azure.categories_updated_at": {
             "type": UserInput.OPTION_TEXT,
             "help": "Azure Categories Updated At",
             "tooltip": "automatically updated",
             "default": 0,
-            "coerce_type": float
+            "coerce_type": float,
+            "indirect": True
         }
     }
 

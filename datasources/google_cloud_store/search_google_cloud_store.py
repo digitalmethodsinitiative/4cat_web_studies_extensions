@@ -33,14 +33,16 @@ class SearchGoogleCloudStore(SeleniumSearch):
             "type": UserInput.OPTION_TEXT_JSON,
             "help": "Google Cloud Product Categories",
             "tooltip": "automatically updated",
-            "default": {}
+            "default": {},
+            "indirect": True
         },
         "cache.google_cloud.categories_updated_at": {
             "type": UserInput.OPTION_TEXT,
             "help": "Google Cloud Product Categories Updated At",
             "tooltip": "automatically updated",
             "default": 0,
-            "coerce_type": float
+            "coerce_type": float,
+            "indirect": True
         }
     }
 
