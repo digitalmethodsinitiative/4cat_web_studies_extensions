@@ -71,7 +71,6 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         except InvalidSessionIdException:
             # Somehow we lost the session; restart Selenium
             self.restart_selenium()
-            self.reset_current_page()
 
         success = False
         attempts = 0
