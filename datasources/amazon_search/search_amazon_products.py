@@ -3,6 +3,7 @@ Selenium Webpage HTML Scraper
 
 Currently designed around Firefox, but can also work with Chrome; results may vary
 """
+import traceback
 import datetime
 import time
 from urllib.parse import unquote, urlparse, parse_qs
@@ -310,6 +311,7 @@ class AmazonProductSearch(SeleniumSearch):
             except InvalidSessionIdException as e:
                 if url_obj["retries"] > 3:
                     self.dataset.log(f"Firefox error; too many retries; skipping {url}\n{e}")
+                    self.dataset.log(f"DEBUG: {result.get('body', '')}")
                     result['error'] += "Too many retries\n"
                     yield result
                 else:
