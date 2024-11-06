@@ -308,15 +308,16 @@ class AmazonProductSearch(SeleniumSearch):
                         current += 1
 
             except InvalidSessionIdException as e:
-                if url_obj["retries"] >= 3:
+                if url_obj["retries"] > 3:
                     self.dataset.log(f"Firefox error; too many retries; skipping {url}\n{e}")
                     result['error'] += "Too many retries\n"
                     yield result
                 else:
-                    self.dataset.log(f"Firefox error; restarting browser and trying again\n{e}")
-                    self.restart_selenium()
+                    self.dataset.log(f"Firefox error; restarting browser and trying again\n{traceback.extract_stack()}\n{e}")
                     url_obj["retries"] += 1
                     urls_to_collect.insert(0, url_obj)
+
+                self.restart_selenium()
                 continue
 
 

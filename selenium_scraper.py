@@ -82,8 +82,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
                 success = True
                 self.consecutive_errors = 0
             except TimeoutException as e:
-                errors.append(f"Timeout retrieving {url}")
-                self.selenium_log.debug(f"Selenium Timeout({url}): {e}")
+                errors.append(f"Timeout retrieving {url}: {e}")
             except Exception as e:
                 self.selenium_log.error(f"Error driver.get({url}){(' (dataset '+self.dataset.key+') ') if hasattr(self, 'dataset') else ''}: {e}")
                 errors.append(e)
@@ -245,6 +244,8 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
                 raise ProcessorException('Webdriver not installed or path to executable incorrect (%s)' % str(e))
             else:
                 raise ProcessorException("Could not connect to browser (%s)." % str(e))
+        # Test adding a script to remove webdriver detection
+        self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         self.selenium_log.info(f"Selenium started with browser PID: {self.driver.service.process.pid}")
 
     def quit_selenium(self):
