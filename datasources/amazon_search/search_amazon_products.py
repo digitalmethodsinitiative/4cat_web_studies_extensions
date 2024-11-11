@@ -122,6 +122,7 @@ class AmazonProductSearch(SeleniumSearch):
         num_urls = len(urls_to_collect)
         urls_collected = 0
         missing_carousels = 0
+        potential_captcha = 0
 
         while urls_to_collect:
             if self.interrupted:
@@ -191,6 +192,7 @@ class AmazonProductSearch(SeleniumSearch):
                 if any([detected_text in self.driver.page_source for detected_text in ["Enter the characters you see below", "Sorry, we just need to make sure you're not a robot."]]):
                     self.dataset.log("Detected potential CAPTCHA on %s" % url)
                     result['error'] += "CAPTCHA detected\n"
+                    potential_captcha += 1
 
                 # Collect the product details
                 # These may change or not exist, but I would prefer to still collect them here if possible as we lose access to selenium later
@@ -330,7 +332,7 @@ class AmazonProductSearch(SeleniumSearch):
 
             if found_carousels == 0:
                 # No carousels found, but some were present
-                result['error'] += "No recommendations found\n"
+                result['error'] += "No recommendations found on page\n"
                 if len(carousels) > 0:
                     # Carousels were present, but none were recommendations... possible issue w/ carousel detection
                     missing_carousels += 1
@@ -356,8 +358,12 @@ class AmazonProductSearch(SeleniumSearch):
             urls_collected += 1
             yield result
 
-        if missing_carousels > 0:
-            self.log.warning("Amazon product collector: No recommendations found on %i of %i urls" % (missing_carousels, num_urls))
+        if missing_carousels > 0 or potential_captcha > 0:
+            self.dataset.update_status(f"CAPTCHAs detected on {potential_captcha} URLs and {missing_carousels} URLs missing recommendations; see error column and log for details", is_final=True)
+
+            if potential_captcha == 0 and missing_carousels > 0:
+                # Not a CAPTCHA issue; just missing carousels and that's odd
+                self.log.warning("Amazon product collector (%s): No recommendations found on %i of %i urls" % (str(self.dataset.key), missing_carousels, num_urls))
 
 
     @staticmethod
