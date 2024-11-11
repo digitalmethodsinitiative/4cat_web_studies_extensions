@@ -187,7 +187,7 @@ class SearchAppleStore(Search):
                     try:
                         results.append(self.collect_detailed_data_from_apple_store_by_id(app))#, country, language))
                     except AppStoreConnectionError as e:
-                        self.dataset.log(f"Error collecting app {app['id']}: {e}")
+                        self.dataset.log(f"Error collecting app {app}: {e}")
                         continue
         if results:
             self.dataset.log(f"Collected {len(results)} results from Apple Store")
