@@ -12,7 +12,7 @@ from ural import is_url
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import StaleElementReferenceException, InvalidSessionIdException
+from selenium.common.exceptions import StaleElementReferenceException, InvalidSessionIdException, TimeoutException
 
 from common.config_manager import config
 from extensions.web_studies.selenium_scraper import SeleniumSearch
@@ -177,9 +177,9 @@ class AmazonProductSearch(SeleniumSearch):
                     result['error'] += self.driver.title.lower() + "\n"
                     success = False
                 if not success:
-                    self.dataset.log(f"Failed to collect {url}: {errors}")
-                    result['error'] += errors
+                    result['error'] += "; ".join(errors)
                     result['detected_404'] = detected_404
+                    self.dataset.log(f"Failed to collect {url}: {result['error']}")
                     yield result
                     continue
 
@@ -301,8 +301,13 @@ class AmazonProductSearch(SeleniumSearch):
                         next_button = carousel.find_elements(By.XPATH, ".//div[contains(@class, 'a-carousel-right')]")
                         if next_button and current < final:
                             next_button[0].find_element(By.XPATH, ".//span[contains(@class, 'a-button-inner')]").click()
-                            WebDriverWait(carousel, 10).until(EC.text_to_be_present_in_element(
-                                (By.XPATH, ".//span[contains(@class, 'a-carousel-page-current')]"), str(current + 1)))
+                            try:
+                                WebDriverWait(carousel, 10).until(EC.text_to_be_present_in_element(
+                                    (By.XPATH, ".//span[contains(@class, 'a-carousel-page-current')]"), str(current + 1)))
+                            except TimeoutException:
+                                # Timeout; no new content loaded
+                                self.dataset.log(f"Timeout waiting for carousel {heading_text} to load page {current + 1} on {url}; continuing to next carousel")
+                                break
                             # even with the Wait for page to update, the actual recs may take a bit longer
                             time.sleep(.5)
 
