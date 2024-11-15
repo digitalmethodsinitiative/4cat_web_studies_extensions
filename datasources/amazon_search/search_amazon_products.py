@@ -29,6 +29,7 @@ class AmazonProductSearch(SeleniumSearch):
     title = "Amazon Related Products"  # title displayed in UI
     description = "Collect related products from a list of Amazon product links"  # description displayed in UI
     extension = "ndjson"
+    eager_selenium = True
 
     # Known carousels to collect recommendations
     config = {

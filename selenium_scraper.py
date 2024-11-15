@@ -46,6 +46,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
     driver = None
     last_scraped_url = None
     browser = None
+    eager_selenium = False
 
     consecutive_errors = 0
     num_consecutive_errors_before_restart = 3
@@ -192,12 +193,16 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         else:
             return False
 
-    def start_selenium(self, eager=False):
+    def start_selenium(self, eager=None):
         """
         Start a headless browser
 
-        :param bool eager:  Eager loading?
+        :param bool eager:  Eager loading? If None, uses class attribute self.eager_selenium (default False)
         """
+        if eager is not None:
+            # Update eager loading
+            self.eager_selenium = eager
+
         self.browser = config.get('selenium.browser')
         # Selenium options
         # TODO review and compare Chrome vs Firefox options
@@ -221,7 +226,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-browser-side-navigation")
 
-        if eager:
+        if self.eager_selenium:
             options.set_capability("pageLoadStrategy", "eager")
 
         try:
@@ -259,12 +264,12 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         except Exception as e:
             self.selenium_log.error(e)
 
-    def restart_selenium(self):
+    def restart_selenium(self, eager=None):
         """
         Weird Selenium error? Restart and try again.
         """
         self.quit_selenium()
-        self.start_selenium()
+        self.start_selenium(eager=eager)
         self.reset_current_page()
 
     def set_page_load_timeout(self, timeout=60):
@@ -689,7 +694,7 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
             raise ProcessorException("Selenium not available; please ensure browser and webdriver are installed and configured in settings")
 
         try:
-            self.start_selenium(eager=(hasattr(self, "eager_selenium") and self.eager_selenium))
+            self.start_selenium(eager=self.eager_selenium)
         except ProcessorException as e:
             self.quit_selenium()
             raise e
