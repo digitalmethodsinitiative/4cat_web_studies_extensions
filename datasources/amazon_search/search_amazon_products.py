@@ -235,7 +235,7 @@ class AmazonProductSearch(SeleniumSearch):
                 carousels = self.driver.find_elements(By.CSS_SELECTOR, "div[class*=a-carousel-container]")
                 found_carousels = 0
                 for carousel in carousels:
-                    heading = carousel.find_elements(By.XPATH, ".//h2[contains(@class, 'a-carousel-heading')]")
+                    heading = carousel.find_elements(By.XPATH, ".//*[contains(@class, 'a-carousel-heading')]") # can be h1 or h2
                     if not heading:
                         # Not a recommendation carousel
                         continue
