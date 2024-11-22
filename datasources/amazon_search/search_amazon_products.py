@@ -364,8 +364,8 @@ class AmazonProductSearch(SeleniumSearch):
             self.dataset.update_status(f"CAPTCHAs detected on {potential_captcha} URLs and {missing_carousels} URLs missing recommendations; see error column and log for details", is_final=True)
             if potential_captcha != missing_carousels:
                 # Not a CAPTCHA issue; just missing carousels and that's odd
-                if num_urls > 0 and missing_carousels/num_urls > 0.5:
-                    self.log.warning("Amazon product collector (%s): More than half of URLs missing recommendations" % str(self.dataset.key))
+                if num_urls > 0 and missing_carousels/num_urls > 0.10:
+                    self.log.warning(f"Amazon product collector ({self.dataset.key}): {int((missing_carousels/num_urls) * 100)}% of URLs missing recommendations")
 
     @staticmethod
     def map_item(page_result):
