@@ -336,6 +336,7 @@ class AmazonProductSearch(SeleniumSearch):
                 result['error'] += "No recommendations found on page\n"
                 if len(carousels) > 0:
                     # Carousels were present, but none were recommendations... possible issue w/ carousel detection
+                    self.dataset.log(f"No recommendations found on {url}; unable to extract from carousels ({len(carousels)} detected)")
                     missing_carousels += 1
 
             if depth > 0 and result["recommendations"] and current_depth < depth:
@@ -361,11 +362,10 @@ class AmazonProductSearch(SeleniumSearch):
 
         if missing_carousels > 0 or potential_captcha > 0:
             self.dataset.update_status(f"CAPTCHAs detected on {potential_captcha} URLs and {missing_carousels} URLs missing recommendations; see error column and log for details", is_final=True)
-
-            if potential_captcha == 0 and missing_carousels > 0:
+            if potential_captcha != missing_carousels:
                 # Not a CAPTCHA issue; just missing carousels and that's odd
-                self.log.warning("Amazon product collector (%s): No recommendations found on %i of %i urls" % (str(self.dataset.key), missing_carousels, num_urls))
-
+                if num_urls > 0 and missing_carousels/num_urls > 0.5:
+                    self.log.warning("Amazon product collector (%s): More than half of URLs missing recommendations" % str(self.dataset.key))
 
     @staticmethod
     def map_item(page_result):
