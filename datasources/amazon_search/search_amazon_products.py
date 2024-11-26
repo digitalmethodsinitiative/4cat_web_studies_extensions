@@ -424,7 +424,7 @@ class AmazonProductSearch(SeleniumSearch):
         page_result.pop("html")
 
         # Convert the body to a single string
-        page_result["body"] = "\n".join(page_result["body"])
+        page_result["body"] = "\n".join(page_result["body"]) if page_result["body"] else ""
 
         return MappedItem(page_result)
 
