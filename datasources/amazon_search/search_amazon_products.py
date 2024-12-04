@@ -303,7 +303,7 @@ class AmazonProductSearch(SeleniumSearch):
                         # Check if there is a next page and click if so
                         next_button = carousel.find_elements(By.XPATH, ".//div[contains(@class, 'a-carousel-right')]")
                         if next_button and current < final:
-                            next_button[0].find_element(By.XPATH, ".//span[contains(@class, 'a-button-inner')]").click()
+                            self.destroy_to_click(next_button[0].find_element(By.XPATH, ".//span[contains(@class, 'a-button-inner')]"))
                             try:
                                 WebDriverWait(carousel, 10).until(EC.text_to_be_present_in_element(
                                     (By.XPATH, ".//span[contains(@class, 'a-carousel-page-current')]"), str(current + 1)))
