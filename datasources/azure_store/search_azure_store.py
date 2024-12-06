@@ -56,7 +56,7 @@ class SearchAzureStore(Search):
             },
             "amount": {
                 "type": UserInput.OPTION_TEXT,
-                "help": "Max number of results" + (f" (max {max_results:,})" if max_results != 0 else ""),
+                "help": "Max number of results per query" + (f" (max {max_results:,})" if max_results != 0 else ""),
                 "default": 60 if max_results == 0 else min(max_results, 60),
                 "min": 0 if max_results == 0 else 1,
                 "max": max_results,
@@ -126,14 +126,15 @@ class SearchAzureStore(Search):
                 main_category = category.split("_--_")[0]
                 sub_category = category.split("_--_")[1]
 
+        count = 0
         for query in queries:
             self.dataset.update_status(f"Processing query {query}")
             if self.interrupted:
                 raise ProcessorInterruptedException(f"Processor interrupted while fetching query {query}")
             page = 1
-            num_results = 0
+            query_results = 0
             while True:
-                results = self.get_query_results(query, category=main_category, sub_category=sub_category, previous_results=num_results, page=page)
+                results = self.get_query_results(query, category=main_category, sub_category=sub_category, previous_results=query_results, page=page)
                 if not results:
                     self.dataset.update_status(f"No additional results found for query {query}")
                     break
@@ -144,19 +145,21 @@ class SearchAzureStore(Search):
                             # Only interrupting if we are collecting full details as otherwise we have already collected everything
                             raise ProcessorInterruptedException(f"Processor interrupted while fetching details for {result.get('title')}")
 
-                        if num_results >= max_results:
+                        if query_results >= max_results:
                             break
                         result = self.get_app_details(result)
 
+                    result["id"] = count
                     result["4CAT_metadata"] = {"query": query, "category": main_category if main_category is not None else "all", "sub_category": sub_category, "page": page, "collected_at_timestamp": datetime.datetime.now().timestamp()}
                     yield result
-                    num_results += 1
+                    count += 1
+                    query_results += 1
 
-                    self.dataset.update_status(f"Processed {num_results}{' of ' + str(max_results) if max_results > 0 else ''}")
+                    self.dataset.update_status(f"Processed {query_results}{' of ' + str(max_results) if max_results > 0 else ''} for query {query}")
                     if max_results > 0:
-                        self.dataset.update_progress(num_results / max_results)
+                        self.dataset.update_progress(query_results / (max_results * len(queries)))
 
-                if num_results >= max_results:
+                if query_results >= max_results:
                     # We may have extra result as results are batched
                     break
 
@@ -314,6 +317,7 @@ class SearchAzureStore(Search):
         additional_details = [{detail_label: detail.get("text")} for detail_label, detail in item.get("details", {}).items() if detail_label.lower() not in detail_groups]
 
         formatted_item = {
+            "id": item.get("id"),
             "query": item.get("4CAT_metadata", {}).get("query", ""),
             "category": item.get("4CAT_metadata", {}).get("category", ""),
             "sub_category": item.get("4CAT_metadata", {}).get("sub_category", ""),

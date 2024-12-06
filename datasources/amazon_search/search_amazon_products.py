@@ -124,8 +124,10 @@ class AmazonProductSearch(SeleniumSearch):
         urls_collected = 0
         missing_carousels = 0
         potential_captcha = 0
+        count = 0
 
         while urls_to_collect:
+            count += 1
             if self.interrupted:
                 raise ProcessorInterruptedException("Interrupted while collecting Amazon product URLs")
 
@@ -147,6 +149,7 @@ class AmazonProductSearch(SeleniumSearch):
                 asin_id = None
 
             result = {
+                "id": count,
                 "url": url,
                 "final_url": None,
                 "product_id": asin_id,

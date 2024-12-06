@@ -119,9 +119,11 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
         num_urls = len(urls_to_scrape)
         if scrape_additional_subpages:
             num_urls = num_urls * (scrape_additional_subpages + 1)
-        done = 0
 
+        done = 0
+        count = 0
         while urls_to_scrape:
+            count += 1
             if self.interrupted:
                 raise ProcessorInterruptedException("Interrupted while scraping urls from the Web Archive")
 
@@ -133,6 +135,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
             url = url_obj['url']
             num_additional_subpages = url_obj['num_additional_subpages']
             result = {
+                "id": count,
                 "base_url": url_obj['base_url'],
                 "year": url_obj['year'],
                 "url": url,

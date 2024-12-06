@@ -136,7 +136,9 @@ class ScreenshotWithSelenium(SeleniumSearch):
         # Set timeout for driver.get(); Web archives in particular can take a while to load
         self.set_page_load_timeout(30)
 
+        count = 0
         while urls_to_scrape:
+            count += 1
             # Grab first url
             url = urls_to_scrape.pop(0)
             if url in scraped_urls:
@@ -148,6 +150,7 @@ class ScreenshotWithSelenium(SeleniumSearch):
 
             filename = self.filename_from_url(url) + ".png"
             result = {
+                "id": count,
                 "url": url,
                 "filename": filename,
                 "timestamp": None,
