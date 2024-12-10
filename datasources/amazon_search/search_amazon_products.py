@@ -124,6 +124,7 @@ class AmazonProductSearch(SeleniumSearch):
         urls_collected = 0
         missing_carousels = 0
         potential_captcha = 0
+        consecutive_captchas = 0
         count = 0
 
         while urls_to_collect:
@@ -138,9 +139,9 @@ class AmazonProductSearch(SeleniumSearch):
 
             self.dataset.update_progress(len(collected_urls) / num_urls) # annoyingly a moving target but not sure how to truly estimated it
             if depth == 0:
-                self.dataset.update_status("%i of %i URLs collected" % (urls_collected, num_urls))
+                self.dataset.update_status(f"Collecting {url} (URL {urls_collected} of {num_urls} collected)" )
             else:
-                self.dataset.update_status("Collecting depth %i of %i (%i of %i URLs collected)" % (current_depth + 1, depth + 1, urls_collected, num_urls))
+                self.dataset.update_status(f"Collecting {url} (Depth {current_depth + 1} of {depth + 1}; URL {urls_collected} of {num_urls} collected)")
 
             try:
                 asin_id = AmazonProductSearch.extract_asin_from_url(url)
@@ -174,6 +175,8 @@ class AmazonProductSearch(SeleniumSearch):
 
                 # Collection timestamp
                 result['timestamp'] = int(datetime.datetime.now().timestamp())
+
+                # Add to collected URLs
                 collected_urls.add(url)
 
                 # Check for 404 or other errors
@@ -194,9 +197,28 @@ class AmazonProductSearch(SeleniumSearch):
 
                 # Check for potential detection
                 if any([detected_text in self.driver.page_source for detected_text in ["Enter the characters you see below", "Sorry, we just need to make sure you're not a robot."]]):
-                    self.dataset.log("Detected potential CAPTCHA on %s" % url)
-                    result['error'] += "CAPTCHA detected\n"
-                    potential_captcha += 1
+                    if consecutive_captchas < 5:
+                        consecutive_captchas += 1
+                        result['error'] += "CAPTCHA detected\n"
+                        potential_captcha += 1
+                        time.sleep(5)
+                        if url_obj["retries"] < 1:
+                            # Only retry once for CAPTCHAs
+                            self.dataset.log(f"Detected potential CAPTCHA on {url}; waiting and trying again later")
+                            urls_to_collect += [{'url': url, 'current_depth': current_depth, "retries": url_obj["retries"] + 1}]
+                        else:
+                            self.dataset.log(f"Detected CAPTCHAs multiple times on {url}; skipping")
+                            result['error'] += "Too many retries\n"
+                            yield result
+                            continue
+                    else:
+                        # Too many consecutive captchas; end collection
+                        result['error'] += "CAPTCHA detected\n"
+                        yield result
+                        self.dataset.update_status(f"Too many consecutive CAPTCHAs detected; unable to continue", is_final=True)
+                        break
+                else:
+                    consecutive_captchas = 0
 
                 # Collect the product details
                 # These may change or not exist, but I would prefer to still collect them here if possible as we lose access to selenium later
