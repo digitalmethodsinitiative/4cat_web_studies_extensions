@@ -13,6 +13,7 @@ from extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
+from common.lib.helpers import url_to_hash
 
 class SearchWithSelenium(SeleniumSearch):
     """
@@ -91,7 +92,7 @@ class SearchWithSelenium(SeleniumSearch):
             url = url_obj['url']
             num_additional_subpages = url_obj['num_additional_subpages']
             result = {
-                "id": count,
+                "id": url_to_hash(url),
                 "base_url": url_obj['base_url'],
                 "url": url,
                 "final_url": None,

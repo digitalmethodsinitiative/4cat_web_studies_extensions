@@ -135,7 +135,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
             url = url_obj['url']
             num_additional_subpages = url_obj['num_additional_subpages']
             result = {
-                "id": count,
+                "id": url_to_hash(url),
                 "base_url": url_obj['base_url'],
                 "year": url_obj['year'],
                 "url": url,

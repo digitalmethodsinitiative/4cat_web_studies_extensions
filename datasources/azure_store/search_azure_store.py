@@ -11,6 +11,7 @@ from backend.lib.search import Search
 from common.lib.exceptions import ProcessorInterruptedException, ProcessorException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
+from common.lib.helpers import url_to_hash
 
 
 class SearchAzureStore(Search):
@@ -149,7 +150,7 @@ class SearchAzureStore(Search):
                             break
                         result = self.get_app_details(result)
 
-                    result["id"] = count
+                    result["id"] = url_to_hash(self.base_url + result.get("href")) # use URL as unique ID
                     result["4CAT_metadata"] = {"query": query, "category": main_category if main_category is not None else "all", "sub_category": sub_category, "page": page, "collected_at_timestamp": datetime.datetime.now().timestamp()}
                     yield result
                     count += 1

@@ -12,6 +12,7 @@ from common.lib.exceptions import ProcessorInterruptedException, ProcessorExcept
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
 from extensions.web_studies.selenium_scraper import SeleniumSearch
+from common.lib.helpers import url_to_hash
 
 from common.config_manager import config
 
@@ -186,7 +187,7 @@ class SearchAwsStore(SeleniumSearch):
 
                     # TODO: check full details
                     result = self.parse_search_result(result_block)
-                    result["id"] = collected
+                    result["id"] = url_to_hash(url)
                     result["4CAT_metadata"] = {"query": query,
                                                "category": category,
                                                "creator": creator,
