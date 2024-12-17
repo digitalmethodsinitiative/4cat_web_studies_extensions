@@ -17,6 +17,7 @@ from common.lib.exceptions import QueryParametersException, ProcessorInterrupted
 from common.lib.user_input import UserInput
 from common.lib.helpers import convert_to_int, url_to_hash
 from common.config_manager import config
+from common.lib.helpers import url_to_hash
 
 
 class ScreenshotWithSelenium(SeleniumSearch):
@@ -150,7 +151,7 @@ class ScreenshotWithSelenium(SeleniumSearch):
 
             filename = self.filename_from_url(url) + ".png"
             result = {
-                "id": count,
+                "id": url_to_hash(url),
                 "url": url,
                 "filename": filename,
                 "timestamp": None,

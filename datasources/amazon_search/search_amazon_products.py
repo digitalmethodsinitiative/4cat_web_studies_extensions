@@ -19,6 +19,7 @@ from extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
+from common.lib.helpers import url_to_hash
 
 class AmazonProductSearch(SeleniumSearch):
     """
@@ -146,11 +147,11 @@ class AmazonProductSearch(SeleniumSearch):
             try:
                 asin_id = AmazonProductSearch.extract_asin_from_url(url)
             except ValueError:
-                self.dataset.log("Unable to identify Amazon product ID (ASIN) for %s; is this a proper Amazon link?" % url)
+                self.dataset.log("Unable to identify Amazon product ID (ASIN) for %s; is this a proper Amazon link?; using URL hash for ID" % url)
                 asin_id = None
 
             result = {
-                "id": count,
+                "id": asin_id if asin_id else url_to_hash(url),
                 "url": url,
                 "final_url": None,
                 "product_id": asin_id,

@@ -12,6 +12,7 @@ from common.lib.exceptions import ProcessorInterruptedException, ProcessorExcept
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
 from common.config_manager import config
+from common.lib.helpers import url_to_hash
 
 class SearchGoogleCloudStore(SeleniumSearch):
     """
@@ -303,7 +304,7 @@ class SearchGoogleCloudStore(SeleniumSearch):
         :param item:
         :return:
         """
-        item["id"] = item["link"].replace("https://console.cloud.google.com/marketplace/product/", "").replace("/", "_")
+        item["id"] = url_to_hash(item["link"]) # hash of URL for ID
         item["body"] = item["description"]
         item["timestamp"] = item["collected_at"]
         # Removing HTML; can be accessed via original item if desired

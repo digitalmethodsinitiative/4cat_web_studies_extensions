@@ -15,6 +15,7 @@ from extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException, ProcessorException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
+from common.lib.helpers import url_to_hash
 
 from common.config_manager import config
 
@@ -135,7 +136,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
             url = url_obj['url']
             num_additional_subpages = url_obj['num_additional_subpages']
             result = {
-                "id": count,
+                "id": url_to_hash(url),
                 "base_url": url_obj['base_url'],
                 "year": url_obj['year'],
                 "url": url,
