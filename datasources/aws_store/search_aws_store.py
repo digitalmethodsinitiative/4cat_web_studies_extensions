@@ -187,7 +187,7 @@ class SearchAwsStore(SeleniumSearch):
 
                     # TODO: check full details
                     result = self.parse_search_result(result_block)
-                    result["id"] = url_to_hash(url)
+                    result["id"] = url_to_hash(result["app_id"])
                     result["4CAT_metadata"] = {"query": query,
                                                "category": category,
                                                "creator": creator,
