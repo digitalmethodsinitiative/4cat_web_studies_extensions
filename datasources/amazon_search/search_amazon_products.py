@@ -401,6 +401,8 @@ class AmazonProductSearch(SeleniumSearch):
         :param json page_result:  Object with original datatypes
         :return dict:  Dictionary in the format expected by 4CAT
         """
+        if not page_result.get("id"):
+            page_result["id"] = page_result.get("product_id") if page_result.get("product_id") else url_to_hash(page_result.get("url"))
         # Convert the recommendations to comma-separated strings
         recommendations = page_result.pop("recommendations")
         page_result["rec_types_displayed"] = ", ".join(recommendations.keys())
