@@ -247,6 +247,8 @@ class SearchWithSelenium(SeleniumSearch):
         :param json page_result:  Object with original datatypes
         :return dict:  Dictionary in the format expected by 4CAT
         """
+        if not page_result.get("id"):
+            page_result["id"] = url_to_hash(page_result.get("url"))
         # Convert list of text strings to one string
         page_result['body'] = '\n'.join(page_result.get('body')) if page_result.get('body') else ''
         # Convert list of link objects to comma seperated urls
