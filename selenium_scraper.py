@@ -6,6 +6,8 @@ import os
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from bs4.element import Comment
+from ural import is_url
+from requests.utils import requote_uri
 
 from backend.lib.search import Search
 from common.lib.exceptions import ProcessorException
@@ -461,6 +463,62 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             return [title] + text
         else:
             return text
+
+    @staticmethod
+    def validate_urls_from_params(params_url_text, allowed_schemes=None):
+        """
+        Primarily designed to work with Search.validate_query() which expects a text string of urls. Users are (should
+        be) told to separate by newlines, however, most other inputs are separated by commas. This function will take a
+        string of URLs and return a validated list and list of invalid urls (which can then be used to inform the user).
+
+        Note: some urls may contain scheme (e.g., https://web.archive.org/web/20250000000000*/http://economist.com);
+        this function will work so long as the inner scheme does not follow a comma (e.g., "http://,https://"). Future
+        problems.
+
+        :param str params_url_text:  Text string of URLs separated by newlines or commas
+        :param tuple allowed_schemes:  Tuple of allowed schemes (default: ('http://', 'https://', 'ftp://', 'ftps://'))
+        """
+        if allowed_schemes is None:
+            allowed_schemes = ('http://', 'https://', 'ftp://', 'ftps://')
+        potential_urls = []
+        # Split the text by \n
+        for line in params_url_text.split('\n'):
+            # Handle commas that may exist within URLs
+            parts = line.split(',')
+            recombined_url = ""
+            for part in parts:
+                if part.startswith(allowed_schemes):  # Other schemes exist
+                    # New URL start detected
+                    if recombined_url:
+                        # Already have a URL, add to list
+                        potential_urls.append(recombined_url)
+                    # Start new URL
+                    recombined_url = part
+                elif part:
+                    if recombined_url:
+                        # Add to existing URL
+                        recombined_url += "," + part
+                    else:
+                        # No existing URL, start new
+                        recombined_url = part
+                else:
+                    # Ignore empty strings
+                    pass
+            if recombined_url:
+                # Add any remaining URL
+                potential_urls.append(recombined_url)
+
+        validated_urls = []
+        invalid_urls = []
+        for url in potential_urls:
+            # requote_uri will fix any issues with spaces and other characters; seems better than urllib.parse.quote which does not work if the url is already quoted
+            url = requote_uri(url)
+            if is_url(url, require_protocol=True):
+                validated_urls.append(url)
+            else:
+                invalid_urls.append(url)
+
+        return validated_urls, invalid_urls
 
     @staticmethod
     def get_beautiful_links(page_source, domain, beautiful_soup_parser='html.parser'):

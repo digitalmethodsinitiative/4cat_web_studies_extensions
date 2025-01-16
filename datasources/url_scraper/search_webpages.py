@@ -7,10 +7,11 @@ from urllib.parse import urlparse
 import datetime
 import random
 from ural import is_url
+from requests.utils import requote_uri
 
 from common.config_manager import config
 from extensions.web_studies.selenium_scraper import SeleniumSearch
-from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException
+from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException, QueryNeedsExplicitConfirmationException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
 from common.lib.helpers import url_to_hash
@@ -39,7 +40,7 @@ class SearchWithSelenium(SeleniumSearch):
             },
             "query-info": {
                 "type": UserInput.OPTION_INFO,
-                "help": "Please enter a list of urls one per line."
+                "help": "Please enter a list of urls one per line. Include the protocol (e.g., http://, https://)."
             },
             "query": {
                 "type": UserInput.OPTION_TEXT_LARGE,
@@ -66,8 +67,6 @@ class SearchWithSelenium(SeleniumSearch):
         :param query:
         :return:
         """
-        self.dataset.log('Query: %s' % str(query))
-        self.dataset.log('Parameters: %s' % str(self.parameters))
         scrape_additional_subpages = self.parameters.get("subpages", 0)
         urls_to_scrape = [{'url':url, 'base_url':url, 'num_additional_subpages': scrape_additional_subpages, 'subpage_links':[]} for url in query.get('urls')]
 
@@ -272,16 +271,21 @@ class SearchWithSelenium(SeleniumSearch):
         :param User user:  User object of user who has submitted the query
         :return dict:  Safe query parameters
         """
-
-        # this is the bare minimum, else we can't narrow down the full data set
         if not query.get("query", None):
             raise QueryParametersException("Please provide a List of urls.")
-        urls = [url.strip() for url in query.get("query", "").replace("\n", ",").split(',')]
-        preprocessed_urls = [url for url in urls if is_url(url)]
-        if not preprocessed_urls:
+
+        validated_urls, invalid_urls = SeleniumSearch.validate_urls_from_params(query.get("query", ""))
+
+        if invalid_urls:
+            if not query.get("frontend-confirm"):
+                raise QueryNeedsExplicitConfirmationException(f"Invalid Urls detected: \n{invalid_urls} \nContinue anyway?")
+            else:
+                validated_urls += invalid_urls
+
+        if not validated_urls:
             raise QueryParametersException("No Urls detected!")
 
         return {
-            "urls": preprocessed_urls,
+            "urls": validated_urls,
             "subpages": query.get("subpages", 0)
             }
