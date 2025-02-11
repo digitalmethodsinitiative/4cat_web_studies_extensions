@@ -133,14 +133,14 @@ if __name__ == "__main__":
 	# Install latest firefox
 	if not firefox_installed:
 		print("Installing the latest version of Firefox")
-		FIREFOX_SETUP = "firefox-setup.tar.bz2"
+		FIREFOX_SETUP = "firefox-setup.tar.xz"
 		command = "apt-get purge firefox"
 		run_command(command, "Error removing existing firefox")
 
 		command = f'wget -O {FIREFOX_SETUP} https://download.mozilla.org/?product=firefox-latest&os=linux64'
 		run_command(command, "Error downloading firefox")
 
-		command = f"tar xjf {FIREFOX_SETUP} -C /opt/"
+		command = f"tar xf {FIREFOX_SETUP} -C /opt/"
 		run_command(command, "Error unzipping firefox")
 
 		command = "ln -sf /opt/firefox/firefox /usr/bin/firefox"
