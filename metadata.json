@@ -1,5 +1,6 @@
 {
   "name": "DMI 4CAT Web Studies Extensions",
   "version": "v1.0",
-  "url": "https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions"
+  "url": "https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions",
+  "id": "web_studies"
 }
