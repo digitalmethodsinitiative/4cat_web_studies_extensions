@@ -6,12 +6,12 @@ from selenium.common import exceptions as selenium_exceptions
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-from extensions.web_studies.selenium_scraper import SeleniumWrapper
+from data.extensions.web_studies.selenium_scraper import SeleniumWrapper
 from backend.lib.worker import BasicWorker
 from common.lib.exceptions import ProcessorInterruptedException, ProcessorException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
-from extensions.web_studies.selenium_scraper import SeleniumSearch
+from data.extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.helpers import url_to_hash
 
 from common.config_manager import config

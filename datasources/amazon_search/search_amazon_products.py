@@ -15,7 +15,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import StaleElementReferenceException, InvalidSessionIdException, TimeoutException
 
 from common.config_manager import config
-from extensions.web_studies.selenium_scraper import SeleniumSearch
+from data.extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput

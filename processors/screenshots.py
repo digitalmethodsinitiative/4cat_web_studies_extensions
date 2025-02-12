@@ -12,8 +12,8 @@ from selenium.common import UnexpectedAlertPresentException
 from backend.lib.processor import BasicProcessor
 from common.lib.helpers import UserInput, convert_to_int
 from common.lib.exceptions import ProcessorInterruptedException, ProcessorException
-from extensions.web_studies.selenium_scraper import SeleniumWrapper
-from extensions.web_studies.datasources.url_screenshots.search_webpage_screenshots  import ScreenshotWithSelenium
+from data.extensions.web_studies.selenium_scraper import SeleniumWrapper
+from data.extensions.web_studies.datasources.url_screenshots.search_webpage_screenshots  import ScreenshotWithSelenium
 from common.config_manager import config
 
 
