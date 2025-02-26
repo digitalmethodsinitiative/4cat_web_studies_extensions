@@ -280,8 +280,7 @@ class SearchAwsStore(SeleniumSearch):
         url += "?" + urllib.parse.urlencode(params) if params else ""
         return url
 
-    @staticmethod
-    def click_next_page(driver):
+    def click_next_page(self, driver):
         """"
         Click next page button
         """
@@ -289,7 +288,7 @@ class SearchAwsStore(SeleniumSearch):
         if not next_page:
             return False
         driver.execute_script("arguments[0].scrollIntoView(true);", next_page[0])
-        SeleniumWrapper.destroy_to_click(next_page[0])
+        self.destroy_to_click(next_page[0])
         return True
 
     @staticmethod
