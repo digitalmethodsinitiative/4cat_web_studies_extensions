@@ -289,7 +289,7 @@ class SearchAwsStore(SeleniumSearch):
         if not next_page:
             return False
         driver.execute_script("arguments[0].scrollIntoView(true);", next_page[0])
-        next_page[0].click()
+        SeleniumWrapper.destroy_to_click(next_page[0])
         return True
 
     @staticmethod
