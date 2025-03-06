@@ -362,9 +362,10 @@ class AzureCategories(BasicWorker):
     Collect Azure Store categories and store them in database
     """
     type = "azure-store-category-collector"  # job ID
+    job_interval = 86400
 
     # Run every day to update categories
-    ensure_job = {"remote_id": "azure-store-category-collector", "interval": 86400}
+    ensure_job = {"remote_id": "azure-store-category-collector", "interval": job_interval}
 
     def work(self):
         """
@@ -372,12 +373,23 @@ class AzureCategories(BasicWorker):
         """
         # Collecting from the US store
         categories_url = SearchAzureStore.base_url + f"/en-us/marketplace/apps"
-        try:
-            response = requests.get(categories_url, timeout=30)
-        except requests.exceptions.RequestException as e:
-            raise ProcessorException(f"Failed to fetch data from Azure Store: {e}")
-        if response.status_code != 200:
-            raise ProcessorException(f"Failed to fetch data from Azure Store: {response.status_code} {response.reason}")
+        response = None
+        error = []
+        for i in range(3):
+            try:
+                response = requests.get(categories_url, timeout=30)
+            except requests.exceptions.RequestException as e:
+                error.append(e)
+                time.sleep(5)
+                continue
+            if response.status_code != 200:
+                error.append(f"{response.status_code} {response.reason}")
+                time.sleep(5)
+                continue
+            break
+        if response is None or response.status_code != 200:
+            self.log.error(f"Failed to collect categories from Azure Store (retrying in {self.job_interval}): {error}")
+            return
 
         soup = BeautifulSoup(response.content, "html.parser")
 
