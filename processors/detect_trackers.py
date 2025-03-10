@@ -96,6 +96,7 @@ class DetectTrackers(BasicProcessor):
         self.dataset.log('Searching for trackers in column %s' % column)
         matching_items = 0
         processed_items = 0
+        missed_items = []
         with self.dataset.get_results_path().open("w", encoding="utf-8") as outfile:
             writer = None
 
@@ -120,6 +121,12 @@ class DetectTrackers(BasicProcessor):
 
                 # Get column to be used in search for matches
                 item_column = item.get(column)
+                if not item_column:
+                    # No value in column, skip
+                    item_designation = [item[key] for key in ['final_url', 'url', 'id'] if item.get(key, None)].pop(0)
+                    self.dataset.log("No value in column '%s' for item %s" % (column, item_designation))
+                    missed_items.append(item_designation)
+                    continue
 
                 # Compare each tracker with item_column
                 item['tracker_summary'] = {}
@@ -154,6 +161,8 @@ class DetectTrackers(BasicProcessor):
 
         if matching_items == 0:
             self.dataset.update_status("No items matched your criteria", is_final=True)
+        if missed_items:
+            self.dataset.log("Not all items had data in column '%s'; see log for details" % column)
 
         self.dataset.finish(matching_items)
 
