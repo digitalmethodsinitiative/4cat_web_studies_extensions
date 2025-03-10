@@ -506,7 +506,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
                     pass
             if recombined_url:
                 # Add any remaining URL
-                potential_urls.append(recombined_url)
+                potential_urls.append(recombined_url.strip()) # Remove any trailing whitespace
 
         validated_urls = []
         invalid_urls = []
