@@ -162,7 +162,7 @@ class DetectTrackers(BasicProcessor):
         if matching_items == 0:
             self.dataset.update_status("No items matched your criteria", is_final=True)
         if missed_items:
-            self.dataset.log("Not all items had data in column '%s'; see log for details" % column)
+            self.dataset.update_status("Not all items had data in column '%s'; see log for details" % column, is_final=True)
 
         self.dataset.finish(matching_items)
 
