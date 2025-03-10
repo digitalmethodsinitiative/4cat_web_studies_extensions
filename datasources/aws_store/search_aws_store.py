@@ -8,7 +8,7 @@ from selenium.webdriver.support import expected_conditions as EC
 
 from extensions.web_studies.selenium_scraper import SeleniumWrapper
 from backend.lib.worker import BasicWorker
-from common.lib.exceptions import ProcessorInterruptedException, ProcessorException
+from common.lib.exceptions import ProcessorInterruptedException, ProcessorException, QueryNeedsExplicitConfirmationException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
 from extensions.web_studies.selenium_scraper import SeleniumSearch
@@ -78,16 +78,22 @@ class SearchAwsStore(SeleniumSearch):
             },
             "amount": {
                 "type": UserInput.OPTION_TEXT,
-                "help": "Max number of results" + (f" (max {max_results:,})" if max_results != 0 else ""),
+                "help": "Max number of results per query" + (f" (max {max_results:,})" if max_results != 0 else ""),
                 "default": 60 if max_results == 0 else min(max_results, 60),
                 "min": 0 if max_results == 0 else 1,
                 "max": max_results,
                 "tooltip": "The AWS Marketplace returns apps in batches of 20."
             },
-            "query": {
+            "search_query": {
                 "type": UserInput.OPTION_TEXT_LARGE,
                 "help": "List of queries to search (leave blank for all).",
                 "default": "",  # need default else regex will fail
+            },
+            "advanced_filters": {
+                "type": UserInput.OPTION_TOGGLE,
+                "help": "Advanced Filters",
+                "default": False,
+                "tooltip": "Enable advanced filters to filter by category, creator, pricing model, and delivery method."
             }
         }
 
@@ -99,10 +105,11 @@ class SearchAwsStore(SeleniumSearch):
                 continue
 
             options[cls.query_param_map[filter_name]] = {
-                "type": UserInput.OPTION_CHOICE,
+                "type": UserInput.OPTION_MULTI_SELECT,
                 "help": f"Filter by {filter_name}",
-                "options": {(option["data-value"] if option["name"] not in cls.query_param_ignore else "all"): option["name"] for option in filter_options},
+                "options": {(option["name"] if option["name"] not in cls.query_param_ignore else "all"): option["name"] for option in filter_options},
                 "default": "all",
+                "requires": "advanced_filters==true",
             }
 
         # TODO: add full details collection
@@ -125,89 +132,151 @@ class SearchAwsStore(SeleniumSearch):
             self.dataset.update_status("Selenium not available; unable to collect from AWS Store.", is_final=True)
             return
 
-        queries = re.split(',|\n', self.parameters.get('query', ''))
-        if not queries:
+        search_queries = query.get('search_query', [])
+        if not search_queries:
             # can search all
-            queries = [None]
-        max_results = int(self.parameters.get('amount', 60))
-        full_details = self.parameters.get('full_details', False)
-        category = self.parameters.get('category', None) if self.parameters.get('category', None) != "all" else None
-        creator = self.parameters.get('creator', None) if self.parameters.get('creator', None) != "all" else None
-        pricing_model = self.parameters.get('pricing_model', None) if self.parameters.get('pricing_model', None) != "all" else None
-        fulfillment_option_type = self.parameters.get('fulfillment_option_type', None) if self.parameters.get('fulfillment_option_type', None) != "all" else None
+            search_queries = [""]
+        max_results = int(query.get('amount', 60))
+        full_details = query.get('full_details', False)
+        categories = query.get('category', ["all"])
+        creators = query.get('creator', ["all"])
+        pricing_models = query.get('pricing_model', ["all"])
+        fulfillment_option_types = query.get('fulfillment_option_type', ["all"])
 
-        collected = 0
-        for i, query in enumerate(queries):
-            if self.interrupted:
-                raise ProcessorInterruptedException("Interrupted while collecting AWS Store queries")
-
-            self.dataset.update_status(f"Collecting AWS Store data for query: {query} ({i+1} of {len(queries)})")
-            page = 1
-            result_number = 1
-            query_url = self.get_query_url(self.search_url,
-                                           query=query if query else None,
-                                           category=category,
-                                           creator=creator,
-                                           pricing_model=pricing_model,
-                                           fulfillment_option_type=fulfillment_option_type)
-            success, errors = self.get_with_error_handling(query_url)
-            if not success:
-                self.dataset.log(f"Unable to collect AWS page {query_url}: {errors}")
+        # Filter mappings
+        filter_options = {}
+        all_filters = config.get("cache.aws.query_options", {})
+        for filter_name, filters in all_filters.items():
+            if filter_name not in self.query_param_map:
+                self.log.warning(f"AWS Unknown filter name ({self.dataset.key}): {filter_name}")
                 continue
-            else:
-                self.dataset.log(f"Successfully retrieved AWS page {query_url}")
+            
+            filter_options[self.query_param_map[filter_name]] = {option["name"]: option["data-value"] for option in filters if option["name"] not in self.query_param_ignore}
 
-            try:
-                text_results = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, '//span[@data-test-selector="availableProductsCountMessage"]')))
-                text_results = text_results.text.lstrip('(').rstrip(" results)")
-                try:
-                    num_results = int(text_results.replace("Over ", ""))
-                except ValueError:
-                    num_results = None
-                    self.log.warning(f"{self.type} could not parse number of results: {text_results}")
-                if num_results == 0:
-                    self.dataset.log(f"No results found{', continuing...' if i < len(queries) - 1 else ''}")
-                    continue
+        missing_filters = []
+        total_queries = len(search_queries) * len(categories) * len(creators) * len(pricing_models) * len(fulfillment_option_types)
+        self.dataset.update_status(f"Collecting {total_queries} queries from AWS Store")
+        tried_queries = 0
+        for search_query in search_queries:
+            for category in categories:
+                if category == "all":
+                    category_code = None
                 else:
-                    self.dataset.log(f"Found total of {num_results if (num_results and 'over' not in text_results.lower()) else text_results.lower()} results")
-            except selenium_exceptions.NoSuchElementException:
-                num_results = None
-                self.log.warning(f"{self.type} number of results element not found; unknown number of results")
-                self.dataset.log("Unknown number of results found")
-            total_results = min(num_results if num_results else max_results, max_results)
+                    category_code = filter_options.get("category", {}).get(category)
+                    if not category_code:
+                        self.dataset.update_status(f"Category code not found for {category}")
+                        missing_filters.append(category)
+                        continue
 
-            while collected < max_results:
-                results_table = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'tbody')))
-                # Wait for first result to load
-                WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, '//h2[@data-semantic="title"]')))
+                for creator in creators:
+                    if creator == "all":
+                        creator_code = None
+                    else:
+                        creator_code = filter_options.get("creator", {}).get(creator)
+                        if not creator_code:
+                            self.dataset.update_status(f"Creator code not found for {creator}")
+                            missing_filters.append(creator)
+                            continue
 
-                for result_block in results_table.find_elements(By.TAG_NAME, "tr"):
-                    if self.interrupted:
-                        raise ProcessorInterruptedException("Interrupted while collecting AWS Store results")
+                    for pricing_model in pricing_models:
+                        if pricing_model == "all":
+                            pricing_model_code = None
+                        else:
+                            pricing_model_code = filter_options.get("pricing_model", {}).get(pricing_model)
+                            if not pricing_model_code:
+                                self.dataset.update_status(f"Pricing model code not found for {pricing_model}")
+                                missing_filters.append(pricing_model)
+                                continue
 
-                    # TODO: check full details
-                    result = self.parse_search_result(result_block)
-                    result["id"] = result["app_id"]
-                    result["4CAT_metadata"] = {"query": query,
-                                               "category": category,
-                                               "creator": creator,
-                                               "pricing_model": pricing_model,
-                                               "fulfillment_option_type": fulfillment_option_type,
-                                               "page": page,
-                                               "rank": result_number,
-                                               "collected_at_timestamp": datetime.now().timestamp()}
-                    result_number += 1
-                    collected += 1
-                    yield result
-                    self.dataset.update_progress(collected / total_results)
-                    self.dataset.update_status(
-                        f"Collected {collected} of {total_results} results for query: {query} ({i+1} of {len(queries)})")
+                        for fulfillment_option_type in fulfillment_option_types:
+                            tried_queries += 1
+                            if fulfillment_option_type == "all":
+                                fulfillment_option_type_code = None
+                            else:
+                                fulfillment_option_type_code = filter_options.get("fulfillment_option_type", {}).get(fulfillment_option_type)
+                                if not fulfillment_option_type_code:
+                                    self.dataset.update_status(f"Fulfillment option type code not found for {fulfillment_option_type}")
+                                    missing_filters.append(fulfillment_option_type)
+                                    continue
 
-                if not self.click_next_page(self.driver):
-                    # No next page
-                    break
-                else:
-                    page += 1
+                            if self.interrupted:
+                                raise ProcessorInterruptedException("Interrupted while collecting AWS Store queries")
+                            collected = 0
+                            page = 1
+                            result_number = 1
+                            query_url = self.get_query_url(self.search_url,
+                                                        query=search_query if search_query else None,
+                                                        category=category_code,
+                                                        creator=creator_code,
+                                                        pricing_model=pricing_model_code,
+                                                        fulfillment_option_type=fulfillment_option_type_code)
+                            success, errors = self.get_with_error_handling(query_url)
+                            if not success:
+                                self.dataset.log(f"Unable to collect AWS page {query_url}: {errors}")
+                                continue
+                            else:
+                                self.dataset.log(f"Successfully retrieved AWS page {query_url}")
+
+                            try:
+                                text_results = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, '//span[@data-test-selector="availableProductsCountMessage"]')))
+                                text_results = text_results.text.lstrip('(').rstrip(" results)")
+                                try:
+                                    num_results = int(text_results.replace("Over ", ""))
+                                except ValueError:
+                                    num_results = None
+                                    self.log.warning(f"{self.type} could not parse number of results: {text_results}")
+                                if num_results == 0:
+                                    self.dataset.log(f"No results found{', continuing...' if tried_queries < (total_queries - 1) else ''}")
+                                    continue
+                                else:
+                                    self.dataset.log(f"Found total of {num_results if (num_results and 'over' not in text_results.lower()) else text_results.lower()} results")
+                            except selenium_exceptions.NoSuchElementException:
+                                num_results = None
+                                self.log.warning(f"{self.type} number of results element not found; unknown number of results")
+                                self.dataset.log("Unknown number of results found")
+                            total_results = min(num_results if num_results else max_results, max_results)
+
+                            while collected < max_results:
+                                results_table = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'tbody')))
+                                # Wait for first result to load
+                                WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, '//h2[@data-semantic="title"]')))
+                                
+                                for result_block in results_table.find_elements(By.TAG_NAME, "tr"):
+                                    if self.interrupted:
+                                        raise ProcessorInterruptedException("Interrupted while collecting AWS Store results")
+
+                                    # TODO: check full details
+                                    result = self.parse_search_result(result_block)
+                                    result["id"] = result["app_id"]
+                                    result["4CAT_metadata"] = {"query": search_query,
+                                                            "category": category,
+                                                            "creator": creator,
+                                                            "pricing_model": pricing_model,
+                                                            "fulfillment_option_type": fulfillment_option_type,
+                                                            # These codes are used to filter the results in the AWS Store
+                                                            "filter_codes": {"category": category_code,
+                                                                            "creator": creator_code,
+                                                                            "pricing_model": pricing_model_code,
+                                                                            "fulfillment_option_type": fulfillment_option_type_code},
+                                                            "page": page,
+                                                            "rank": result_number,
+                                                            "collected_at_timestamp": datetime.now().timestamp()}
+                                    result_number += 1
+                                    collected += 1
+                                    yield result
+                                    
+                                if not self.click_next_page(self.driver):
+                                    # No next page
+                                    break
+                                else:
+                                    page += 1
+                            
+                            self.dataset.update_progress(tried_queries / total_queries)
+                            self.dataset.update_status(f"Collected {collected} of {total_results} results for query: {search_query if search_query else 'no query provided'}, category: {category if category else 'all'}, creator: {creator if creator else 'all'}, pricing model: {pricing_model_code if pricing_model_code else 'all'}, fulfillment type: {fulfillment_option_type_code if fulfillment_option_type_code else 'all'} ({tried_queries} of {total_queries})")
+
+        if missing_filters:
+            self.dataset.log(f"Missing filter codes needed to search for: {', '.join(missing_filters)}")
+            self.dataset.update_status(f"Not all filters could be found; see log for details", is_final=True)
 
     @staticmethod
     def parse_search_result(result_element):
@@ -302,6 +371,10 @@ class SearchAwsStore(SeleniumSearch):
         item.pop("html_source")
         return MappedItem({
             "query": fourcat_metadata.get("query", ""),
+            "category": fourcat_metadata.get("category") if fourcat_metadata.get("category") else "all",
+            "creator": fourcat_metadata.get("creator") if fourcat_metadata.get("creator") else "all",
+            "pricing_model": fourcat_metadata.get("pricing_model") if fourcat_metadata.get("pricing_model") else "all",
+            "fulfillment_option_type": fourcat_metadata.get("fulfillment_option_type") if fourcat_metadata.get("fulfillment_option_type") else "all",
             "page": fourcat_metadata.get("page", ""),
             "rank": fourcat_metadata.get("rank", ""),
             "timestamp": fourcat_metadata.get("collected_at_timestamp", ""),
@@ -321,8 +394,36 @@ class SearchAwsStore(SeleniumSearch):
         :param User user:  User object of user who has submitted the query
         :return dict:  Safe query parameters
         """
+        queries = [q.strip() for q in re.split(',|\n', query.get('search_query', "")) if q.strip()]
+        if not queries:
+            # always at least one "query"
+            queries = [""]
+        category = query.get('category', ["all"])
+        if type(category) == str:
+            category = [category]
+        creator =query.get('creator', ["all"])
+        if type(creator) == str:
+            creator = [creator]
+        pricing_model = query.get('pricing_model', ["all"])
+        if type(pricing_model) == str:
+            pricing_model = [pricing_model]
+        fulfillment_option_type = query.get('fulfillment_option_type', ["all"])
+        if type(fulfillment_option_type) == str:
+            fulfillment_option_type = [fulfillment_option_type]
+        
+        total_queries = len(queries) * len(category) * len(creator) * len(pricing_model) * len(fulfillment_option_type)
+        num_results = int(query.get('amount', 60)) * total_queries
 
-        return query
+        if not query.get("frontend-confirm") and (total_queries > 50 or num_results > 10000):
+            raise QueryNeedsExplicitConfirmationException(f"This combination of filters and queries will result in {total_queries} queries w/ up to {num_results} results. Please confirm you want to proceed.")
+        return {
+            "search_query": queries,
+            "category": category,
+            "creator": creator,
+            "pricing_model": pricing_model,
+            "fulfillment_option_type": fulfillment_option_type,
+            "amount": query.get('amount', 60),
+        }
 
 
 class AwsStoreCategories(BasicWorker):
