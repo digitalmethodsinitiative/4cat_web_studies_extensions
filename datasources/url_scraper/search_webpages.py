@@ -78,6 +78,7 @@ class SearchWithSelenium(SeleniumSearch):
 
         done = 0
         count = 0
+        unable_to_scrape = []
         while urls_to_scrape:
             count += 1
             if self.interrupted:
@@ -127,8 +128,7 @@ class SearchWithSelenium(SeleniumSearch):
 
                 # Check for 404 errors
                 if scraped_page['detected_404']:
-                    four_oh_four_error = '404 detected on url: %s\n' % url
-                    self.dataset.log(four_oh_four_error)
+                    four_oh_four_error = '404 detected on url: %s' % url
                     scraped_page['error'] = four_oh_four_error if not scraped_page.get('error', False) else scraped_page['error'] + four_oh_four_error
                     break
                 else:
@@ -233,8 +233,16 @@ class SearchWithSelenium(SeleniumSearch):
                 else:
                     # missing error...
                     result['error'] = 'Unable to scrape'
+                unable_to_scrape.append(f"Unable to scrape url {url}: {result['error']}")
 
                 yield result
+
+        if unable_to_scrape:
+            self.dataset.log("Unable to scrape the following urls:")
+            for error in unable_to_scrape:
+                self.dataset.log(error)
+        self.dataset.update_status(f"Collected {done} of {num_urls} possible URLs." + (f"; Unable to scrape {len(unable_to_scrape)} urls. See log for details." if unable_to_scrape else ''), is_final=True)
+
     @staticmethod
     def map_item(page_result):
         """
