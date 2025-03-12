@@ -1,12 +1,17 @@
 """
 Search HTML for scripts in matching tracking tools
-
-NOTE: expects a file called bugs.json to be located in common\assets\
 """
-import os
+import shutil
 import csv
+import json
+import re
+import requests
+import subprocess
+import sys
 
 from backend.lib.processor import BasicProcessor
+from backend.lib.worker import BasicWorker
+from common.lib.exceptions import WorkerInterruptedException
 from common.lib.helpers import UserInput
 from common.config_manager import config
 
@@ -23,30 +28,31 @@ class DetectTrackers(BasicProcessor):
     Detect tracker scripts (from a collection) within collected HTML
     """
     type = "tracker-extractor"  # job type ID
-    category = "Post Metrics"  # category
+    category = "Post metrics"  # category
     title = "Detect Trackers"  # title displayed in UI
-    description = "Uses a collection of scripts identified as belonging to" \
-                  " different trackers and detects them in HTML. " \
-                  "This will create a new dataset."
+    description = "Identifies URL patterns identified by Ghostery to be used by tracking tools in the selected column. A row for each detected tracker is created in the results."  # description displayed in UI
     extension = "csv"  # extension of result file, used internally and in UI
+
+    references = [
+        "[Ghostery](https://www.ghostery.com/)",	
+        "[Ghostery tracker database](https://github.com/ghostery/trackerdb?tab=readme-ov-file#ghostery-tracker-database)"
+    ]
+
+    possible_parent_columns_for_results = ["id", "timestamp", "url", "final_url", "subject"]
 
     options = {
         "column": {},
-        "record-matches": {
+        "match_type": {	
             "type": UserInput.OPTION_CHOICE,
-            "help": "Create True/False column for each match string",
-            "default": "no",
+            "help": "Type of matching to use",
+            "default": "host_path",
             "options": {
-                "yes": "Yes, create a column for each tracker",
-                "no": "No, summary column only"
+                "regex": "Regex matching",
+                "host_path": "Contains",
             },
-            "tooltip": "A column is created for each tracker and marked True " \
-                       "if value was found in column. Otherwise only a summary " \
-                       "column is created listing detected trackers."
-        }
+            "tooltip": "Regex matching is more precise but MUCH slower. Contains is faster as it looks for URL paths in text, but these may not always be used for tracking."
+        },
     }
-
-    tracker_file = os.path.join(config.get('PATH_ROOT'), 'common/assets/bugs.json')
 
     @classmethod
     def is_compatible_with(cls, module=None, user=None):
@@ -58,7 +64,7 @@ class DetectTrackers(BasicProcessor):
 
         :param module: Dataset or processor to determine compatibility with
         """
-        return os.path.isfile(cls.tracker_file) and module.is_top_dataset()
+        return True# module.is_top_dataset()
 
     @classmethod
     def get_options(cls, parent_dataset=None, user=None):
@@ -84,185 +90,292 @@ class DetectTrackers(BasicProcessor):
         Reads a dataset, filtering items that match in the required way, and
         creates a new dataset containing the matching values
         """
-
         column = self.parameters.get("column", "")
-        record_matches = True if self.parameters.get("record-matches") == 'yes' else False
+        match_type = self.parameters.get("match_type", "regex")
 
         self.dataset.update_status('Loading trackers...')
-        trackers = self.load_trackers(self.tracker_file)
-        tracker_names = list(set([trackers[tracker]['name'] for tracker in trackers]))
-        self.dataset.update_status('Loaded %i trackers.' % len(trackers))
+        trackersdb = self.load_trackers()
+        if match_type == "regex":
+            self.dataset.update_status('Loaded %i regex tracker patterns.' % len(trackersdb["regex_patterns"]))
+            compiled_patterns = {re.compile(pattern): key for pattern, key in trackersdb["regex_patterns"].items()}
+            
+        elif match_type == "host_path":
+            self.dataset.update_status('Loaded %i host path tracker patterns.' % len(trackersdb["host_paths"]))
+        else:
+            self.dataset.finish_with_error('Unknown match type %s' % match_type)
+            return
 
         self.dataset.log('Searching for trackers in column %s' % column)
         matching_items = 0
-        processed_items = 0
         missed_items = []
+        trackers_found = 0
+        
         with self.dataset.get_results_path().open("w", encoding="utf-8") as outfile:
             writer = None
 
-            for item in self.source_dataset.iterate_items(self):
-                if not writer:
-                    # first iteration, check if column actually exists
-                    if column not in item.keys():
-                        self.dataset.update_status("Column '%s' not found in dataset" % column, is_final=True)
-                        self.dataset.finish(0)
-                        return
-
-                    if record_matches:
-                        fieldnames = list(item.keys()) + ['tracker_summary'] + tracker_names
-                    else:
-                        fieldnames = list(item.keys()) + ['tracker_summary']
-                    # initialise csv writer - we do this explicitly rather than
-                    # using self.write_items_and_finish() because else we have
-                    # to store a potentially very large amount of items in
-                    # memory which is not a good idea
-                    writer = csv.DictWriter(outfile, fieldnames=fieldnames)
-                    writer.writeheader()
-
-                # Get column to be used in search for matches
-                item_column = item.get(column)
-                if not item_column:
+            for i, item in enumerate(self.source_dataset.iterate_items(self)):
+                if self.interrupted:
+                    raise WorkerInterruptedException("Interrupted while searching for trackers")
+                
+                if column not in item:
+                    self.dataset.finish_with_error("Column '%s' not found in dataset" % column)
+                    return
+                
+                if not item.get(column):
                     # No value in column, skip
-                    item_designation = [item[key] for key in ['final_url', 'url', 'id'] if item.get(key, None)].pop(0)
-                    self.dataset.log("No value in column '%s' for item %s" % (column, item_designation))
-                    missed_items.append(item_designation)
+                    missed_items.append(self.get_item_label(item))
                     continue
+        
+                self.dataset.update_progress(i/self.source_dataset.num_rows)
+                self.dataset.update_status("Searching for trackers in item %i of %i" % (i+1, self.source_dataset.num_rows))
+                self.dataset.log("Item %s" % self.get_item_label(item))
+                
+                matches = []
+                # Search for trackers
+                if match_type == "regex":
+                    for regex_pattern, pattern_key in compiled_patterns.items():
+                        if regex_pattern.search(item[column]):
+                            matches.append((regex_pattern.pattern, pattern_key))
+                        
+                elif match_type == "host_path":
+                    for host_path, pattern_key in trackersdb["host_paths"].items():
+                        if host_path in item[column]:
+                            matches.append((host_path, pattern_key))
 
-                # Compare each tracker with item_column
-                item['tracker_summary'] = {}
-                # TODO: change output to not include all item columns; this originally was a filter but broke with filter updates
-                for tracker in trackers:
-                    if tracker in item_column:
-                        # Add to summary
-                        if trackers[tracker]['type'] in item['tracker_summary'].keys():
-                            # add to summary
-                            item['tracker_summary'][trackers[tracker]['type']].append(trackers[tracker]['name'])
-                        else:
-                            # start summary
-                            item['tracker_summary'][trackers[tracker]['type']] = [trackers[tracker]['name']]
-                        # Add to tracker column
-                        if record_matches:
-                            if trackers[tracker]['name'] in item.keys():
-                                # already one tracker with that name identified
-                                item[trackers[tracker]['name']] = item[trackers[tracker]['name']] + ',' + tracker
-                            else:
-                                # first tracker of that name
-                                item[trackers[tracker]['name']] = tracker
-                # Record entry
-                if item['tracker_summary']:
-                    writer.writerow(item)
+                if matches:
                     matching_items += 1
+                    result = {}
+                    # Add item information
+                    for key in self.possible_parent_columns_for_results:
+                        if key in item:
+                            result[key] = item[key]
+                    
+                    for match in matches:
+                        trackers_found += 1
+                        pattern_found = trackersdb["patterns"].get(match[1], {})
+                        result["tracker_name"] = pattern_found.get("name", "")
+                        result["tracker_website"] = pattern_found.get("website_url", "")
+                        result["tracker_alias"] = pattern_found.get("alias", "")
+                        result["tracker_pattern_matched"] = match[0]
+                        
+                        category = trackersdb["categories"].get(pattern_found.get("category")) if pattern_found.get("category") else {}
+                        result["category"] = category.get("name", "")
+                        result["category_description"] = category.get("description", "")
 
-                processed_items += 1
-                if processed_items % 50 == 0:
-                    self.dataset.update_status(
-                        "Processed %i items (%i with trackers detected)" % (processed_items, matching_items))
-                    self.dataset.update_progress(processed_items / self.source_dataset.num_rows)
+                        organization = trackersdb["organizations"].get(pattern_found.get("organization")) if pattern_found.get("organization") else {}
+                        result["organization"] = organization.get("name", "")
+                        result["org_description"] = organization.get("description", "")
+                        result["org_country"] = organization.get("country", "")
+                        result["org_privacy_policy_url"] = organization.get("privacy_policy_url", "")
+                        result["org_privacy_contact"] = organization.get("privacy_contact", "")
+
+                        if not writer:
+                            writer = csv.DictWriter(outfile, fieldnames=result.keys())
+                            writer.writeheader()
+                        writer.writerow(result)                
 
         if matching_items == 0:
             self.dataset.update_status("No items matched your criteria", is_final=True)
         if missed_items:
-            self.dataset.update_status("Not all items had data in column '%s'; see log for details" % column, is_final=True)
+            for item in missed_items:
+                self.dataset.log("No matches in column '%s' for item: %s" % (column, item))
+            self.dataset.update_status("Not all items had matches in column '%s'; see log for details" % column, is_final=True)
 
-        self.dataset.finish(matching_items)
+        self.dataset.finish(trackers_found)
 
-    def load_trackers(self, location_of_tracker_file):
+    def load_trackers(self):
         """
-        This takes a json database of scripts and names of the company/organization
-        that uses them and reformats it to be used by our script. This may be
-        unnecessary, but it already existed (https://github.com/digitalmethodsinitiative/tools/blob/master/beta/trackerTracker/ghostery/update.py)
-        so porting seemed easier.
+        This takes a json database of and extracts two possible filters for trackers: host paths and regex patterns.
+        The regex_patherns are more presice, but are incredibly time consuming to search for. The host paths are faster
+        but less precise. Many of the host paths are just the domains which is why they are less precise.
 
-        TODO: Look at better way to load the trackers; this misses a few trackers of unknown type (perhaps category did not exist?)
-
+        The document is found from Ghostery's https://github.com/ghostery/trackerdb repository. Building the database 
+        creates a file called "trackerdb.json" which is used as the input to this file. It also contains data on the
+        organizations and the categories of the trackers.
         """
-        from collections.abc import MutableMapping
-        import json
 
-        def merge(x, y):
+
+        def adblock_to_regex(filter_rule):
             """
-            Makes a shallow copy of an origin dictionary and update it with another.
-            :param x: First dictionary to merge
-            :type x: Dictionary
-            :param y: Second dictionary to merge
-            :type y: Dictionary
-            :return: Returns a merged dictionary
-            :rtype: Dictionary
+            Converts an Adblock Plus filter rule to a regex pattern.
             """
-            z = x.copy()
-            z.update(y)
+            pattern = re.escape(filter_rule)
+            # Handle the `||` prefix (matches any subdomain)
+            pattern = pattern.replace(r"\|\|", r"(https?:\/\/)?([a-zA-Z0-9.-]+\.)?")
+            # Handle `^` as a boundary marker
+            pattern = pattern.replace(r"\^", r"(?=[\/\?\:\#]|$)")
+            # Remove special rules like `\$3p`
+            pattern = re.sub(r"\\\$\w+", "", pattern)
 
-            return z
+            return pattern
 
-        def flatten(d, o, parent=''):
-            """
-            Flatten dictionary to a keyvalue pair. The key will be a dot notated string containing the nested keys of a dictionary.
-            This will be a domain/hostname. The value will contain the bug id (cid).
-            :param d: Dictionary to flatten
-            :type d: Dictionary
-            :param o: Type of conversion
-            :type o: String
-            :param parent: Optional parameter for passing the previously flatten dictionary path.
-            :return: Returns a list of keyvalue pairs containing domains/hostnames: cid
-            :rtype: List
-            """
-            items = []
-            for k, v in d.items():
-                new = parent + '.' + k if parent else k
-                if isinstance(v, MutableMapping):
-                    items.extend(flatten(v, o, new).items())
-                else:
-                    if o == 'host':
-                        split = new.split('.')[:-1]
-                        split.reverse()
+        with GhosteryDataUpdater.trackerdb_file.open() as update:
+            trackerdb = json.load(update)
 
-                        #pattern = '\\.'.join(split)
-                        pattern = '.'.join(split)
-                        cid = v
+        if any([key not in trackerdb for key in ["domains", "filters"]]):
+            raise ValueError("trackerdb.json is missing required keys")
+            
+        tracker_dictionary = {"regex_patterns": {}, "host_paths": {}}
+        for domain, pattern_key in trackerdb["domains"].items():
+            # Create regex pattern for domains
+            regex_pattern = re.escape(domain)
+            regex_pattern = "(https?:\/\/)?([a-zA-Z0-9.-]+\.)?" + regex_pattern + "(?=[\/\?\:\#]|$)"
+            tracker_dictionary["regex_patterns"][regex_pattern] = pattern_key
 
-                        items.append((pattern, cid))
+            # Add domain to host_paths
+            if domain:
+                tracker_dictionary["host_paths"][domain] = pattern_key
 
-                    elif o == 'host_path':
-                        split = new.split('.')[:-1]
-                        split.reverse()
+        for filter_pattern, pattern_key in trackerdb["filters"].items():
+            # Create regex pattern for filters
+            regex_pattern = adblock_to_regex(filter_pattern)
+            print(regex_pattern)
+            tracker_dictionary["regex_patterns"][regex_pattern] = pattern_key
 
-                        #pattern = '\\.'.join(split)
-                        pattern = '.'.join(split)
-                        for p in v:
-                            #path = pattern + '\\/' + p['path']
-                            path = pattern + '/' + p['path']
-                            items.append((path, p['id']))
+            # Add filter to host_paths
+            # Remove adblock plus markers
+            domain = filter_pattern.split("^")[0]
+            domain = domain.replace("||", "")
+            if domain:
+                tracker_dictionary["host_paths"][domain] = pattern_key
 
-                    elif o == 'first_party':
-                        self.dataset.log("unknown tracker path type: %s" % str(v))
-
-
-            return dict(items)
-
-        with open(location_of_tracker_file) as update:
-            data = json.load(update)
-            apps = data['apps']
-            bugs = data['bugs']
-            patterns = data['patterns']
-
-        tracker_dictionary = {}
-
-        host = flatten(patterns['host'], 'host')
-        host_path = flatten(patterns['host_path'], 'host_path')
-
-        items = merge(host, host_path)
-        for index, (key, value) in enumerate(items.items()):
-            aid = bugs[str(value)]['aid']
-            name = apps[str(aid)]['name']
-            cat = apps[str(aid)]['cat']
-
-            tracker_dictionary[key] = {
-                    "id": index,
-                    "aid": aid,
-                    "cid": value,
-                    "name": name,
-                    "type": cat,
-                    }
-        with open(self.tracker_file.rstrip('.json.') + '_update.json', 'w') as outfile:
-            json.dump(tracker_dictionary, outfile)
+        # Add back organization and category information
+        tracker_dictionary.update(trackerdb)
+        
         return tracker_dictionary
+    
+    @classmethod
+    def get_item_label(cls, item):
+        """
+        Return useful label for item
+        """
+        label = []
+        for key in cls.possible_parent_columns_for_results:
+            if key in item:
+                label.append(str(item[key]))
+        return " - ".join(label)
+
+class GhosteryDataUpdater(BasicWorker):
+    """
+    Collect Google Cloud Product Store categories and store them in database
+    """
+    type = "ghostery-data-collector"  # job ID
+
+    # Run every day to update categories
+    ensure_job = {"remote_id": "ghostery-data-collector", "interval": 86400}
+
+    repo_url = "https://github.com/ghostery/trackerdb.git"
+    repo_latest_release = "https://api.github.com/repos/ghostery/trackerdb/releases/latest"
+    ghostery_repo = config.get("PATH_ROOT").joinpath("config/ghostery")
+    trackerdb_file = ghostery_repo.joinpath("dist/trackerdb.json")
+
+    config = {
+        "cache.ghostery.db_updated_at": {
+            "type": UserInput.OPTION_TEXT,
+            "help": "Ghostery trackerdb updated at",
+            "tooltip": "automatically updated",
+            "default": 0,
+            "coerce_type": float,
+            "indirect": True
+        },
+        "cache.ghostery.current_release": {
+            "type": UserInput.OPTION_TEXT,
+            "help": "Ghostery trackerdb release",
+            "tooltip": "automatically updated",
+            "default": "",
+            "indirect": True
+        }
+    }
+
+
+    def ensure_node_installed(self):
+        if shutil.which("node") and shutil.which("npm"):
+            return True # Node.js and npm are installed
+        
+        # Check we are in linux environment
+        if sys.platform != "linux":
+            raise ValueError("This installation is only for Linux OS")
+        
+        # Install Node.js and npm
+        result = subprocess.run(["apt", "update"], capture_output=True)
+        if result.returncode != 0:
+            raise ValueError("Error updating apt")
+        result = subprocess.run(["apt", "install", "-y", "nodejs", "npm"], capture_output=True)
+        if result.returncode != 0:
+            raise ValueError("Error installing Node.js and npm")
+        
+        return True
+    
+    def build_tracker_db(self):
+        # Clone Ghostery tracker database
+        try:
+            self.ensure_node_installed()
+        except ValueError as e:
+            self.log.error(str(e))
+            self.log.error("Please download Ghostery tracker database manually.")
+            return
+        
+        # Build Ghostery tracker database dependencies
+        result = subprocess.run(["npm", "install"], capture_output=True, cwd=self.ghostery_repo)
+        if result.returncode != 0:
+            self.log.error("Error installing Ghostery tracker database")
+            return
+        
+        # Create trackerdb.json file
+        result = subprocess.run(["node", "scripts/export-json/index.js"], capture_output=True, cwd=self.ghostery_repo)
+        if result.returncode != 0:
+            self.log.error("Error building Ghostery tracker database")
+            return
+
+        # Check trackerdb.json file exists
+        if not self.trackerdb_file.exists():
+            self.log.error("trackerdb.json file not found")
+            return
+
+    def get_latest_release(self):
+        """Fetch the latest release version from GitHub API."""
+        response = requests.get(self.repo_latest_release)
+        
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("tag_name")
+        else:
+            self.log.error(f"Ghoserty DB Update Error fetching release: {response.status_code} - {response.text}")
+            return None
+        
+    def work(self):
+        if not self.ghostery_repo.exists():
+            self.log.info("Cloning Ghostery tracker database and installing")
+            # First time running, clone the repository
+            latest_release = self.get_latest_release()
+            result = subprocess.run(["git", "clone", self.repo_url, self.ghostery_repo])
+            if result.returncode != 0:
+                self.log.error("Error cloning Ghostery tracker database")
+                return
+            config.set("cache.ghostery.current_release", latest_release)
+            
+            # Build the database
+            self.build_tracker_db()
+            self.log.info("Ghostery tracker database installed")
+
+        else:
+            # Check if update is needed
+            latest_release = self.get_latest_release()
+            if not latest_release:
+                return
+            
+            current_release = config.get("cache.ghostery.current_release")
+            
+            if current_release != latest_release:
+                self.log.info(f"Updating Ghostery tracker database from {current_release} to {latest_release}")
+                # Update the repository
+                result = subprocess.run(["git", "pull"], cwd=self.ghostery_repo)
+                if result.returncode != 0:
+                    self.log.error("Error updating Ghostery tracker database")
+                    return
+                config.set("cache.ghostery.current_release", latest_release)
+
+                # Build the database
+                self.build_tracker_db()
+            else:
+                self.log.info("Ghostery tracker database is already up to date")
