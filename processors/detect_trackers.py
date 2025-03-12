@@ -8,6 +8,7 @@ import re
 import requests
 import subprocess
 import sys
+from datetime import datetime
 
 from backend.lib.processor import BasicProcessor
 from backend.lib.worker import BasicWorker
@@ -30,7 +31,9 @@ class DetectTrackers(BasicProcessor):
     type = "tracker-extractor"  # job type ID
     category = "Post metrics"  # category
     title = "Detect Trackers"  # title displayed in UI
-    description = "Identifies URL patterns identified by Ghostery to be used by tracking tools in the selected column. A row for each detected tracker is created in the results."  # description displayed in UI
+    last_updated = config.get("cache.ghostery.db_updated_at", 0)
+    last_updated = datetime.fromtimestamp(last_updated).strftime("%Y-%m-%d") if last_updated != 0 else False
+    description = f"Identifies URL patterns identified by Ghostery {'(updated ' + last_updated + ') ' if last_updated else ''}to be used by tracking tools in the selected column. A row for each detected tracker is created in the results."  # description displayed in UI
     extension = "csv"  # extension of result file, used internally and in UI
 
     references = [
@@ -41,17 +44,11 @@ class DetectTrackers(BasicProcessor):
     possible_parent_columns_for_results = ["id", "timestamp", "url", "final_url", "subject"]
 
     options = {
-        "column": {},
-        "match_type": {	
+        "column": {
             "type": UserInput.OPTION_CHOICE,
-            "help": "Type of matching to use",
-            "default": "host_path",
-            "options": {
-                "regex": "Regex matching",
-                "host_path": "Contains",
-            },
-            "tooltip": "Regex matching is more precise but MUCH slower. Contains is faster as it looks for URL paths in text, but these may not always be used for tracking."
-        },
+            "default": "html",
+            "help": "Dataset column containing HTML"
+        }
     }
 
     @classmethod
@@ -64,11 +61,10 @@ class DetectTrackers(BasicProcessor):
 
         :param module: Dataset or processor to determine compatibility with
         """
-        return True# module.is_top_dataset()
+        return GhosteryDataUpdater.trackerdb_file.exists()
 
     @classmethod
     def get_options(cls, parent_dataset=None, user=None):
-
         options = cls.options
         if not parent_dataset:
             return options
@@ -91,20 +87,11 @@ class DetectTrackers(BasicProcessor):
         creates a new dataset containing the matching values
         """
         column = self.parameters.get("column", "")
-        match_type = self.parameters.get("match_type", "regex")
 
         self.dataset.update_status('Loading trackers...')
         trackersdb = self.load_trackers()
-        if match_type == "regex":
-            self.dataset.update_status('Loaded %i regex tracker patterns.' % len(trackersdb["regex_patterns"]))
-            compiled_patterns = {re.compile(pattern): key for pattern, key in trackersdb["regex_patterns"].items()}
-            
-        elif match_type == "host_path":
-            self.dataset.update_status('Loaded %i host path tracker patterns.' % len(trackersdb["host_paths"]))
-        else:
-            self.dataset.finish_with_error('Unknown match type %s' % match_type)
-            return
-
+        num_trackers = sum([len(regex_list) for substring, regex_list in trackersdb["regex_patterns"].items()])
+        self.dataset.update_status('Loaded %i regex tracker patterns.' % num_trackers)
         self.dataset.log('Searching for trackers in column %s' % column)
         matching_items = 0
         missed_items = []
@@ -132,16 +119,16 @@ class DetectTrackers(BasicProcessor):
                 
                 matches = []
                 # Search for trackers
-                if match_type == "regex":
-                    for regex_pattern, pattern_key in compiled_patterns.items():
-                        if regex_pattern.search(item[column]):
-                            matches.append((regex_pattern.pattern, pattern_key))
+                for substring, regex_list in trackersdb["regex_patterns"].items():
+                    # Check for substring before using regex
+                    if substring in item[column]:
+                        # Now check for exact regex pattern associated with substring
+                        for regex in regex_list:
+                            pattern_key = regex["pattern_key"]
+                            regex_pattern = regex["regex_pattern"]
+                            if regex_pattern.search(item[column]):
+                                matches.append((regex_pattern.pattern, pattern_key))
                         
-                elif match_type == "host_path":
-                    for host_path, pattern_key in trackersdb["host_paths"].items():
-                        if host_path in item[column]:
-                            matches.append((host_path, pattern_key))
-
                 if matches:
                     matching_items += 1
                     result = {}
@@ -183,11 +170,15 @@ class DetectTrackers(BasicProcessor):
 
         self.dataset.finish(trackers_found)
 
-    def load_trackers(self):
+    @staticmethod
+    def load_trackers():
         """
         This takes a json database of and extracts two possible filters for trackers: host paths and regex patterns.
-        The regex_patherns are more presice, but are incredibly time consuming to search for. The host paths are faster
-        but less precise. Many of the host paths are just the domains which is why they are less precise.
+        The regex_patherns are more presice, but are incredibly time consuming to search for.
+
+        The regex patterns are formmated with a substring and a dictionary with the pattern key and the regex pattern.
+        e.g. {"substring": {"pattern_key": "pattern_key", "regex_pattern": "regex_pattern"}}
+        This can be used to speed up search; only using the regex if the substring is found.
 
         The document is found from Ghostery's https://github.com/ghostery/trackerdb repository. Building the database 
         creates a file called "trackerdb.json" which is used as the input to this file. It also contains data on the
@@ -199,6 +190,12 @@ class DetectTrackers(BasicProcessor):
             """
             Converts an Adblock Plus filter rule to a regex pattern.
             """
+            # Clean the filter rule
+            cleaned_rule = filter_rule.replace("||", "")
+            cleaned_rule = re.sub(r"\^.*", "", cleaned_rule)
+            cleaned_rule = re.sub(r"\$.*", "", cleaned_rule)
+
+            # Escape the cleaned filter rule
             pattern = re.escape(filter_rule)
             # Handle the `||` prefix (matches any subdomain)
             pattern = pattern.replace(r"\|\|", r"(https?:\/\/)?([a-zA-Z0-9.-]+\.)?")
@@ -207,7 +204,9 @@ class DetectTrackers(BasicProcessor):
             # Remove special rules like `\$3p`
             pattern = re.sub(r"\\\$\w+", "", pattern)
 
-            return pattern
+            compiled_pattern = re.compile(pattern)
+
+            return (cleaned_rule, compiled_pattern)
 
         with GhosteryDataUpdater.trackerdb_file.open() as update:
             trackerdb = json.load(update)
@@ -215,34 +214,29 @@ class DetectTrackers(BasicProcessor):
         if any([key not in trackerdb for key in ["domains", "filters"]]):
             raise ValueError("trackerdb.json is missing required keys")
             
-        tracker_dictionary = {"regex_patterns": {}, "host_paths": {}}
+        regex_patterns = {}
         for domain, pattern_key in trackerdb["domains"].items():
             # Create regex pattern for domains
             regex_pattern = re.escape(domain)
             regex_pattern = "(https?:\/\/)?([a-zA-Z0-9.-]+\.)?" + regex_pattern + "(?=[\/\?\:\#]|$)"
-            tracker_dictionary["regex_patterns"][regex_pattern] = pattern_key
-
-            # Add domain to host_paths
-            if domain:
-                tracker_dictionary["host_paths"][domain] = pattern_key
+            compiled_pattern = re.compile(regex_pattern)
+            if domain in regex_patterns:
+                regex_patterns[domain].append({"pattern_key": pattern_key, "regex_pattern": compiled_pattern})
+            else:
+                regex_patterns[domain] = [{"pattern_key": pattern_key, "regex_pattern": compiled_pattern}]
 
         for filter_pattern, pattern_key in trackerdb["filters"].items():
             # Create regex pattern for filters
-            regex_pattern = adblock_to_regex(filter_pattern)
-            print(regex_pattern)
-            tracker_dictionary["regex_patterns"][regex_pattern] = pattern_key
-
-            # Add filter to host_paths
-            # Remove adblock plus markers
-            domain = filter_pattern.split("^")[0]
-            domain = domain.replace("||", "")
-            if domain:
-                tracker_dictionary["host_paths"][domain] = pattern_key
+            substring, regex_pattern = adblock_to_regex(filter_pattern)
+            if substring in regex_patterns:
+                regex_patterns[substring].append({"pattern_key": pattern_key, "regex_pattern": regex_pattern})
+            else:
+                regex_patterns[substring] = [{"pattern_key": pattern_key, "regex_pattern": regex_pattern}]
 
         # Add back organization and category information
-        tracker_dictionary.update(trackerdb)
+        trackerdb["regex_patterns"] = regex_patterns
         
-        return tracker_dictionary
+        return trackerdb
     
     @classmethod
     def get_item_label(cls, item):
@@ -353,6 +347,7 @@ class GhosteryDataUpdater(BasicWorker):
                 self.log.error("Error cloning Ghostery tracker database")
                 return
             config.set("cache.ghostery.current_release", latest_release)
+            config.set("cache.ghostery.db_updated_at", datetime.now().timestamp())
             
             # Build the database
             self.build_tracker_db()
@@ -374,6 +369,7 @@ class GhosteryDataUpdater(BasicWorker):
                     self.log.error("Error updating Ghostery tracker database")
                     return
                 config.set("cache.ghostery.current_release", latest_release)
+                config.set("cache.ghostery.db_updated_at", datetime.now().timestamp())
 
                 # Build the database
                 self.build_tracker_db()
