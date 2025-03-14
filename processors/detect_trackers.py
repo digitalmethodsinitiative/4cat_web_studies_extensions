@@ -33,7 +33,7 @@ class DetectTrackers(BasicProcessor):
     title = "Detect Trackers"  # title displayed in UI
     last_updated = config.get("cache.ghostery.db_updated_at", 0)
     last_updated = datetime.fromtimestamp(last_updated).strftime("%Y-%m-%d") if last_updated != 0 else False
-    description = f"Identifies URL patterns identified by Ghostery {'(updated ' + last_updated + ') ' if last_updated else ''}to be used by tracking tools in the selected column. A row for each detected tracker is created in the results."  # description displayed in UI
+    description = f"Identifies URL patterns in HTML or text identified by Ghostery {'(updated ' + last_updated + ') ' if last_updated else ''}to be used by tracking tools in the selected column. A row for each detected tracker is created in the results."  # description displayed in UI
     extension = "csv"  # extension of result file, used internally and in UI
 
     references = [
@@ -108,11 +108,14 @@ class DetectTrackers(BasicProcessor):
                     self.dataset.finish_with_error("Column '%s' not found in dataset" % column)
                     return
                 
-                if not item.get(column):
+                value = item.get(column)
+                if not value:
                     # No value in column, skip
                     missed_items.append(self.get_item_label(item))
                     continue
-        
+                elif not isinstance(value, str):
+                    value = str(value)
+
                 self.dataset.update_progress(i/self.source_dataset.num_rows)
                 self.dataset.update_status("Searching for trackers in item %i of %i" % (i+1, self.source_dataset.num_rows))
                 self.dataset.log("Item %s" % self.get_item_label(item))
@@ -121,17 +124,19 @@ class DetectTrackers(BasicProcessor):
                 # Search for trackers
                 for substring, regex_list in trackersdb["regex_patterns"].items():
                     # Check for substring before using regex
-                    if substring in item[column]:
+                    if substring in value:
                         # Now check for exact regex pattern associated with substring
                         for regex in regex_list:
                             pattern_key = regex["pattern_key"]
                             regex_pattern = regex["regex_pattern"]
-                            if regex_pattern.search(item[column]):
+                            if regex_pattern.search(value):
                                 matches.append((regex_pattern.pattern, pattern_key))
                         
                 if matches:
                     matching_items += 1
-                    result = {}
+                    result = {
+                        "column_searched": column,
+                    }
                     # Add item information
                     for key in self.possible_parent_columns_for_results:
                         if key in item:
@@ -350,8 +355,9 @@ class GhosteryDataUpdater(BasicWorker):
             config.set("cache.ghostery.db_updated_at", datetime.now().timestamp())
             
             # Build the database
-            self.build_tracker_db()
-            self.log.info("Ghostery tracker database installed")
+            success = self.build_tracker_db()
+            if success:
+                self.log.info("Ghostery tracker database installed")
 
         else:
             # Check if update is needed
