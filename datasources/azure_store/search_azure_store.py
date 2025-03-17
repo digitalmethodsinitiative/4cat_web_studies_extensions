@@ -365,7 +365,8 @@ class AzureCategories(BasicWorker):
     job_interval = 86400
 
     # Run every day to update categories
-    ensure_job = {"remote_id": "azure-store-category-collector", "interval": job_interval}
+    if "azure-store-search" in config.get("datasources.enabled"):
+        ensure_job = {"remote_id": "azure-store-category-collector", "interval": job_interval}
 
     def work(self):
         """
