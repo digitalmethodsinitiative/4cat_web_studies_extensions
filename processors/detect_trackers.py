@@ -261,7 +261,9 @@ class GhosteryDataUpdater(BasicWorker):
     type = "ghostery-data-collector"  # job ID
 
     # Run every day to update categories
-    ensure_job = {"remote_id": "ghostery-data-collector", "interval": 86400}
+    if sys.platform == "linux":
+        # Only queue job if system is linux
+        ensure_job = {"remote_id": "ghostery-data-collector", "interval": 86400}
 
     repo_url = "https://github.com/ghostery/trackerdb.git"
     repo_latest_release = "https://api.github.com/repos/ghostery/trackerdb/releases/latest"
@@ -310,8 +312,7 @@ class GhosteryDataUpdater(BasicWorker):
         try:
             self.ensure_node_installed()
         except ValueError as e:
-            self.log.error(str(e))
-            self.log.error("Please download Ghostery tracker database manually.")
+            self.log.error(f"Error: {e}\nPlease download Ghostery tracker database manually.\nInstructions available at https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions/blob/main/processors/README.md")
             return
         
         # Build Ghostery tracker database dependencies
