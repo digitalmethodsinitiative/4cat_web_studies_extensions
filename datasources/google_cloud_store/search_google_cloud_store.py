@@ -319,7 +319,7 @@ class GoogleCloudStoreCategories(BasicWorker):
     type = "google-cloud-store-category-collector"  # job ID
 
     # Run every day to update categories
-    if "google-cloud-store-search" in config.get("datasources.enabled"):
+    if "google-cloud-store" in config.get("datasources.enabled"):
         ensure_job = {"remote_id": "google-cloud-store-category-collector", "interval": 86400}
 
     cat_filter_xpath = "//cfc-unfold[.//span[contains(text(), 'Category')]]"

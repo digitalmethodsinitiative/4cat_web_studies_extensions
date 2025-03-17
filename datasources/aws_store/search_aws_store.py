@@ -433,7 +433,7 @@ class AwsStoreCategories(BasicWorker):
     type = "aws-store-category-collector"  # job ID
 
     # Run every day to update categories
-    if "aws-store-search" in config.get("datasources.enabled"):
+    if "aws-store" in config.get("datasources.enabled"):
         ensure_job = {"remote_id": "aws-store-category-collector", "interval": 86400}
 
     def work(self):
