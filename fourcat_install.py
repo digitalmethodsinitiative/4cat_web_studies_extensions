@@ -100,7 +100,25 @@ if __name__ == "__main__":
 	print("Ensuring required packages are installed")
 	PACKAGES = "wget bzip2 libgtk-3-0 libasound2 libdbus-glib-1-2 libx11-xcb1 libxtst6"
 	command = f"apt-get install --no-install-recommends -y {PACKAGES}"
-	run_command(command, "Error installing packages")
+	result = subprocess.run(command.split(" "), stdout=subprocess.PIPE,
+							stderr=subprocess.PIPE)
+	if result.returncode != 0:
+		if "E: Unable to locate package" in result.stderr.decode("ascii"):
+			print("Packages not found; updating apt-get package list")
+			result = subprocess.run(["apt-get", "update"], stdout=subprocess.PIPE,
+							stderr=subprocess.PIPE)
+			if result.returncode != 0:
+				print("Error updating package list")
+				print("Please run `apt-get update` manually")
+				exit(1)
+			else:
+				result = subprocess.run(command.split(" "), stdout=subprocess.PIPE,
+							stderr=subprocess.PIPE)
+				if result.returncode != 0:
+					print("Error installing packages")
+					print("Please install the following packages manually")
+					print(PACKAGES)
+					exit(1)
 	print(f"Installed packages: {PACKAGES}")
 
 	# Identify latest geckodriver
