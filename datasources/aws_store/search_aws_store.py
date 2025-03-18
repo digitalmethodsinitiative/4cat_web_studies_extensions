@@ -377,7 +377,7 @@ class SearchAwsStore(SeleniumSearch):
             "fulfillment_option_type": fourcat_metadata.get("fulfillment_option_type") if fourcat_metadata.get("fulfillment_option_type") else "all",
             "page": fourcat_metadata.get("page", ""),
             "rank": fourcat_metadata.get("rank", ""),
-            "timestamp": fourcat_metadata.get("collected_at_timestamp", ""),
+            "timestamp": int(fourcat_metadata.get("collected_at_timestamp")),
             **item
         })
 

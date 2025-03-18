@@ -339,7 +339,7 @@ class SearchAzureStore(Search):
             "details": additional_details,
             "additional_tabs": additional_tabs,
             "body": item.get("tabs", {}).get("overview", {}).get("text", ""),
-            "timestamp": item.get("4CAT_metadata", {}).get("collected_at_timestamp", ""),
+            "timestamp": int(item.get("4CAT_metadata", {}).get("collected_at_timestamp")),
         }
 
         return MappedItem(formatted_item)

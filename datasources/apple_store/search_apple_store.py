@@ -273,6 +273,10 @@ class SearchAppleStore(Search):
             # multiple purchase offers is possible...
             pass
         offer = offers[0] if offers else None
+        try:
+            timestamp = datetime.datetime.strptime(platform_data.get("releaseDate"), "%Y-%m-%dT%H:%M:%SZ").timestamp() if "releaseDate" in platform_data else fourcat_metadata.get("collected_at_timestamp", "")
+        except ValueError:
+            timestamp = fourcat_metadata.get("collected_at_timestamp", "")
 
         return {
             "4CAT_query_type": fourcat_metadata["query_method"],
@@ -380,7 +384,7 @@ class SearchAppleStore(Search):
             "id": item.get("id"),
             "author": app_attributes.get("artistName", ""),
             "body": platform_data.get("description").get("standard"),
-            "timestamp": platform_data.get("releaseDate"),
+            "timestamp": int(timestamp),
         }
     
     @staticmethod
@@ -487,7 +491,11 @@ class SearchAppleStore(Search):
         formatted_item["author"] = item.get("artistName", "")
         formatted_item["body"] = item.get("description", "")
         # some queries do not return a publishing timestamp so we use the collected at timestamp
-        formatted_item["timestamp"] = datetime.datetime.strptime(item.get("releaseDate"), "%Y-%m-%dT%H:%M:%SZ") if "releaseDate" in item else collected_timestamp
+        try:
+            timestamp = datetime.datetime.strptime(item.get("releaseDate"), "%Y-%m-%dT%H:%M:%SZ").timestamp() if "releaseDate" in item else collected_timestamp
+        except ValueError:
+            timestamp = collected_timestamp
+        formatted_item["timestamp"] = int(timestamp)
 
         return MappedItem(formatted_item)
 

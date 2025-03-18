@@ -199,6 +199,10 @@ class SearchGoogleStore(SearchAppleStore):
         formatted_item["author"] = item.get("developer_name", "")
         formatted_item["body"] = body
         # some queries do not return a publishing timestamp so we use the collected at timestamp
-        formatted_item["timestamp"] = datetime.datetime.fromtimestamp(item.get("published_timestamp")) if "published_timestamp" in item else datetime.datetime.strptime(item.get("published_date"), "%Y-%m-%d") if "published_date" in item else item.get("collected_at_timestamp")
+        try:
+            timestamp = datetime.datetime.fromtimestamp(item.get("published_timestamp")).timestamp() if "published_timestamp" in item else datetime.datetime.strptime(item.get("published_date"), "%Y-%m-%d").timestamp() if "published_date" in item else item.get("collected_at_timestamp")
+        except ValueError:
+            timestamp = item.get("collected_at_timestamp")
+        formatted_item["timestamp"] = int(timestamp)
 
         return MappedItem(formatted_item)

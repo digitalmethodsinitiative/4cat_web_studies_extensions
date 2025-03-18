@@ -306,7 +306,7 @@ class SearchGoogleCloudStore(SeleniumSearch):
         """
         item["id"] = url_to_hash(item["link"]) # hash of URL for ID
         item["body"] = item["description"]
-        item["timestamp"] = item["collected_at"]
+        item["timestamp"] = int(datetime.strptime(item["collected_at"], "%Y-%m-%d %H:%M:%S").timestamp())
         # Removing HTML; can be accessed via original item if desired
         item.pop("html")
         return MappedItem(item)
