@@ -700,7 +700,7 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
     to initialize that browser and navigate it as needed. It replaces search to allow you to utilize the Selenium driver
     and ensure the webdriver and browser are properly closed out upon completion.
     """
-    max_workers = 3
+    max_workers = 1
     config = {
         "selenium.browser": {
             "type": UserInput.OPTION_TEXT,
@@ -736,6 +736,20 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
             "tooltip": "Show advanced options for Selenium processors",
         },
     }
+
+    @classmethod
+    def check_worker_available(cls, manager):
+        """
+        Check if the worker can run. Here we check if there are too many
+        workers of this type running already.
+
+        :return bool:  True if the worker can run, False if not
+        """
+        # check if we have too many workers of this type running
+        if len([running_worker for running_worker in manager.worker_pool[cls.type] if issubclass(running_worker, SeleniumSearch)]) < cls.max_workers:
+            return True
+        else:
+            return False
 
     def search(self, query):
         """
