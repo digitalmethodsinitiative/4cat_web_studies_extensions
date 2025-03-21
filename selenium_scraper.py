@@ -746,7 +746,13 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
         :return bool:  True if the worker can run, False if not
         """
         # check if we have too many workers of this type running
-        if len([running_worker for running_worker in manager.worker_pool[cls.type] if issubclass(running_worker, SeleniumSearch)]) < cls.max_workers:
+        selenium_workers = 0
+        for worker_group in manager.worker_pool.values():
+            for worker in worker_group:
+                if issubclass(worker, SeleniumSearch):
+                    selenium_workers += 1
+
+        if selenium_workers < cls.max_workers:
             return True
         else:
             return False
