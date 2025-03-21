@@ -674,7 +674,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
                     error_element_class = error.msg.split("element <")[1].split("class=\"")[1].split(" ")[0].rstrip("\">")
                 else:
                     error_element_class = ""
-                self.selenium_log.info(f"destroy_to_click removing element: ({error_element_type}, {error_element_class}")
+                self.selenium_log.info(f"destroy_to_click removing element: ({error_element_type}{',' + error_element_class if error_element_class else ''})")
 
                 self.driver.execute_script(
                     f"document.querySelector('{error_element_type}{'.' + error_element_class if error_element_class else ''}').remove();")
