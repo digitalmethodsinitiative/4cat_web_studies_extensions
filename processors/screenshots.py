@@ -160,6 +160,12 @@ class ScreenshotURLs(BasicProcessor):
                 value = post.get(column)
                 if not value:
                     continue
+                elif isinstance(value, int) or isinstance(value, float):
+                    # not a URL
+                    continue
+                elif not isinstance(value, str):
+                    # convert to string
+                    value = str(value)
 
                 # remove all whitespace from beginning and end (needed for single URL check)
                 values = [value.strip()]
