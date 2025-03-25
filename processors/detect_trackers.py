@@ -61,7 +61,7 @@ class DetectTrackers(BasicProcessor):
 
         :param module: Dataset or processor to determine compatibility with
         """
-        return GhosteryDataUpdater.trackerdb_file.exists()
+        return GhosteryDataUpdater.trackerdb_file.exists() and module.get_extension() in ["csv", "ndjson"]
 
     @classmethod
     def get_options(cls, parent_dataset=None, user=None):
