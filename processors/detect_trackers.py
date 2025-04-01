@@ -36,15 +36,16 @@ def match_trackers(args):
     :param value: Value to check against
     :return: List of tuples containing the regex pattern and the pattern key
     """
+    potential_urls = set(potential_urls)
     substring, regex_list, potential_urls = args
     # Extract URLs from the value
-    matches = []
+    matches = set()
     # Check if the substring is in the potential URLs
     for potential_url in potential_urls:
         if substring in potential_url:
             for regex in regex_list:
                 if regex["regex_pattern"].search(potential_url): # Use the full match from the broad regex
-                    matches.append((regex["regex_pattern"].pattern, regex["pattern_key"]))
+                    matches.add((regex["regex_pattern"].pattern, regex["pattern_key"]))
     return matches
 
 
