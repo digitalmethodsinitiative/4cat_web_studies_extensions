@@ -36,9 +36,8 @@ def match_trackers(args):
     :param value: Value to check against
     :return: List of tuples containing the regex pattern and the pattern key
     """
-    substring, regex_list, value = args
+    substring, regex_list, potential_urls = args
     # Extract URLs from the value
-    potential_urls = url_regex.findall(value)
     matches = []
     # Check if the substring is in the potential URLs
     for potential_url in potential_urls:
@@ -146,10 +145,13 @@ class DetectTrackers(BasicProcessor):
                     self.dataset.update_status("Searching for trackers in item %i of %i" % (i+1, self.source_dataset.num_rows))
                     self.dataset.log("Item %s" % self.get_item_label(item))
                     
+                    # Extract URLs from the value
+                    potential_urls = url_regex.findall(value)
+
                     # Search for trackers
                     results = pool.map(
                         match_trackers,
-                        [(substring, regex_list, value) for substring, regex_list in trackersdb["regex_patterns"].items()]
+                        [(substring, regex_list, potential_urls) for substring, regex_list in trackersdb["regex_patterns"].items()]
                     )
                     matches = [match for sublist in results for match in sublist]
 
