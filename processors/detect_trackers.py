@@ -25,6 +25,7 @@ __email__ = "4cat@oilab.eu"
 
 csv.field_size_limit(1024 * 1024 * 1024)
 
+url_regex = re.compile(r"(https?:\/\/)?([a-zA-Z0-9.-]+\.)?[a-zA-Z0-9.-]+(?=[\/\?\:\#]|$)")
 def match_trackers(args):
     """
     Check if the substring is in the value and then check if any regex patterns match. First check for
@@ -36,11 +37,15 @@ def match_trackers(args):
     :return: List of tuples containing the regex pattern and the pattern key
     """
     substring, regex_list, value = args
+    # Extract URLs from the value
+    potential_urls = url_regex.findall(value)
     matches = []
-    if substring in value:
-        for regex in regex_list:
-            if regex["regex_pattern"].search(value):
-                matches.append((regex["regex_pattern"].pattern, regex["pattern_key"]))
+    # Check if the substring is in the potential URLs
+    for potential_url in potential_urls:
+        if substring in potential_url:
+            for regex in regex_list:
+                if regex["regex_pattern"].search(potential_url):
+                    matches.append((regex["regex_pattern"].pattern, regex["pattern_key"]))
     return matches
 
 
@@ -229,9 +234,9 @@ class DetectTrackers(BasicProcessor):
             # Escape the cleaned filter rule
             pattern = re.escape(filter_rule)
             # Handle the `||` prefix (matches any subdomain)
-            pattern = pattern.replace(r"\|\|", r"(https?:\/\/)?([a-zA-Z0-9.-]+\.)?")
+            pattern = pattern.replace(r"\|\|", r"")
             # Handle `^` as a boundary marker
-            pattern = pattern.replace(r"\^", r"(?=[\/\?\:\#]|$)")
+            pattern = pattern.replace(r"\^", r"")
             # Remove special rules like `\$3p`
             pattern = re.sub(r"\\\$\w+", "", pattern)
 
@@ -249,7 +254,6 @@ class DetectTrackers(BasicProcessor):
         for domain, pattern_key in trackerdb["domains"].items():
             # Create regex pattern for domains
             regex_pattern = re.escape(domain)
-            regex_pattern = "(https?:\/\/)?([a-zA-Z0-9.-]+\.)?" + regex_pattern + "(?=[\/\?\:\#]|$)"
             compiled_pattern = re.compile(regex_pattern)
             if domain in regex_patterns:
                 regex_patterns[domain].append({"pattern_key": pattern_key, "regex_pattern": compiled_pattern})
