@@ -41,9 +41,9 @@ def match_trackers(args):
     matches = []
     # Check if the substring is in the potential URLs
     for potential_url in potential_urls:
-        if substring in potential_url[0]:
+        if substring in potential_url:
             for regex in regex_list:
-                if regex["regex_pattern"].search(potential_url[0]): # Use the full match from the broad regex
+                if regex["regex_pattern"].search(potential_url): # Use the full match from the broad regex
                     matches.append((regex["regex_pattern"].pattern, regex["pattern_key"]))
     return matches
 
@@ -147,7 +147,7 @@ class DetectTrackers(BasicProcessor):
                     
                     # Extract URLs from the value
                     potential_urls = url_regex.findall(value)
-                    self.dataset.log("Potential URLs: %s" % potential_urls)
+                    # self.dataset.log("Potential URLs: %s" % potential_urls)
 
                     # Search for trackers
                     results = pool.map(
