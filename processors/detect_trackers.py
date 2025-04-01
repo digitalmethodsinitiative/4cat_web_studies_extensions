@@ -25,7 +25,7 @@ __email__ = "4cat@oilab.eu"
 
 csv.field_size_limit(1024 * 1024 * 1024)
 
-def match_trackers(substring, regex_list, value):
+def match_trackers(args):
     """
     Check if the substring is in the value and then check if any regex patterns match. First check for
     the substring to speed up the search. If the substring is not found, skip regex matching.
@@ -35,6 +35,7 @@ def match_trackers(substring, regex_list, value):
     :param value: Value to check against
     :return: List of tuples containing the regex pattern and the pattern key
     """
+    substring, regex_list, value = args
     matches = []
     if substring in value:
         for regex in regex_list:
@@ -142,8 +143,8 @@ class DetectTrackers(BasicProcessor):
                     
                     # Search for trackers
                     results = pool.map(
-                        lambda args: match_trackers(args[0], args[1], value),
-                        trackersdb["regex_patterns"].items()
+                        match_trackers,
+                        [(substring, regex_list, value) for substring, regex_list in trackersdb["regex_patterns"].items()]
                     )
                     matches = [match for sublist in results for match in sublist]
 
