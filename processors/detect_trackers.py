@@ -36,7 +36,6 @@ def match_trackers(args):
     :param value: Value to check against
     :return: List of tuples containing the regex pattern and the pattern key
     """
-    potential_urls = set(potential_urls)
     substring, regex_list, potential_urls = args
     # Extract URLs from the value
     matches = set()
@@ -147,7 +146,7 @@ class DetectTrackers(BasicProcessor):
                     self.dataset.log("Item %s" % self.get_item_label(item))
                     
                     # Extract URLs from the value
-                    potential_urls = url_regex.findall(value)
+                    potential_urls = set(url_regex.findall(value))
                     # self.dataset.log("Potential URLs: %s" % potential_urls)
 
                     # Search for trackers
