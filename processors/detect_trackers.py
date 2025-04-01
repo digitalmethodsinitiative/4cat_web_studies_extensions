@@ -9,6 +9,7 @@ import requests
 import subprocess
 import sys
 from datetime import datetime
+from multiprocessing import Pool
 
 from backend.lib.processor import BasicProcessor
 from backend.lib.worker import BasicWorker
@@ -16,12 +17,30 @@ from common.lib.exceptions import WorkerInterruptedException
 from common.lib.helpers import UserInput
 from common.config_manager import config
 
+
 __author__ = "Dale Wahl"
 __credits__ = ["Dale Wahl"]
 __maintainer__ = "Dale Wahl"
 __email__ = "4cat@oilab.eu"
 
 csv.field_size_limit(1024 * 1024 * 1024)
+
+def match_trackers(substring, regex_list, value):
+    """
+    Check if the substring is in the value and then check if any regex patterns match. First check for
+    the substring to speed up the search. If the substring is not found, skip regex matching.
+
+    :param substring: Substring to check for
+    :param regex_list: List of regex patterns to check against
+    :param value: Value to check against
+    :return: List of tuples containing the regex pattern and the pattern key
+    """
+    matches = []
+    if substring in value:
+        for regex in regex_list:
+            if regex["regex_pattern"].search(value):
+                matches.append((regex["regex_pattern"].pattern, regex["pattern_key"]))
+    return matches
 
 
 class DetectTrackers(BasicProcessor):
@@ -100,71 +119,77 @@ class DetectTrackers(BasicProcessor):
         with self.dataset.get_results_path().open("w", encoding="utf-8") as outfile:
             writer = None
 
-            for i, item in enumerate(self.source_dataset.iterate_items(self)):
-                if self.interrupted:
-                    raise WorkerInterruptedException("Interrupted while searching for trackers")
-                
-                if column not in item:
-                    self.dataset.finish_with_error("Column '%s' not found in dataset" % column)
-                    return
-                
-                value = item.get(column)
-                if not value:
-                    # No value in column, skip
-                    missed_items.append(self.get_item_label(item))
-                    continue
-                elif not isinstance(value, str):
-                    value = str(value)
-
-                self.dataset.update_progress(i/self.source_dataset.num_rows)
-                self.dataset.update_status("Searching for trackers in item %i of %i" % (i+1, self.source_dataset.num_rows))
-                self.dataset.log("Item %s" % self.get_item_label(item))
-                
-                matches = []
-                # Search for trackers
-                for substring, regex_list in trackersdb["regex_patterns"].items():
-                    # Check for substring before using regex
-                    if substring in value:
-                        # Now check for exact regex pattern associated with substring
-                        for regex in regex_list:
-                            pattern_key = regex["pattern_key"]
-                            regex_pattern = regex["regex_pattern"]
-                            if regex_pattern.search(value):
-                                matches.append((regex_pattern.pattern, pattern_key))
-                        
-                if matches:
-                    matching_items += 1
-                    result = {
-                        "column_searched": column,
-                    }
-                    # Add item information
-                    for key in self.possible_parent_columns_for_results:
-                        if key in item:
-                            result[key] = item[key]
+            with Pool() as pool:
+                for i, item in enumerate(self.source_dataset.iterate_items(self)):
+                    if self.interrupted:
+                        raise WorkerInterruptedException("Interrupted while searching for trackers")
                     
-                    for match in matches:
-                        trackers_found += 1
-                        pattern_found = trackersdb["patterns"].get(match[1], {})
-                        result["tracker_name"] = pattern_found.get("name", "")
-                        result["tracker_website"] = pattern_found.get("website_url", "")
-                        result["tracker_alias"] = pattern_found.get("alias", "")
-                        result["tracker_pattern_matched"] = match[0]
+                    if column not in item:
+                        self.dataset.finish_with_error("Column '%s' not found in dataset" % column)
+                        return
+                    
+                    value = item.get(column)
+                    if not value:
+                        # No value in column, skip
+                        missed_items.append(self.get_item_label(item))
+                        continue
+                    elif not isinstance(value, str):
+                        value = str(value)
+
+                    self.dataset.update_progress(i/self.source_dataset.num_rows)
+                    self.dataset.update_status("Searching for trackers in item %i of %i" % (i+1, self.source_dataset.num_rows))
+                    self.dataset.log("Item %s" % self.get_item_label(item))
+                    
+                    # Search for trackers
+                    results = pool.map(
+                        lambda args: match_trackers(args[0], args[1], value),
+                        trackersdb["regex_patterns"].items()
+                    )
+                    matches = [match for sublist in results for match in sublist]
+
+                    # for substring, regex_list in trackersdb["regex_patterns"].items():
+                    #     # Check for substring before using regex
+                    #     if substring in value:
+                    #         # Now check for exact regex pattern associated with substring
+                    #         for regex in regex_list:
+                    #             pattern_key = regex["pattern_key"]
+                    #             regex_pattern = regex["regex_pattern"]
+                    #             if regex_pattern.search(value):
+                    #                 matches.append((regex_pattern.pattern, pattern_key))
+                            
+                    if matches:
+                        matching_items += 1
+                        result = {
+                            "column_searched": column,
+                        }
+                        # Add item information
+                        for key in self.possible_parent_columns_for_results:
+                            if key in item:
+                                result[key] = item[key]
                         
-                        category = trackersdb["categories"].get(pattern_found.get("category")) if pattern_found.get("category") else {}
-                        result["category"] = category.get("name", "")
-                        result["category_description"] = category.get("description", "")
+                        for match in matches:
+                            trackers_found += 1
+                            pattern_found = trackersdb["patterns"].get(match[1], {})
+                            result["tracker_name"] = pattern_found.get("name", "")
+                            result["tracker_website"] = pattern_found.get("website_url", "")
+                            result["tracker_alias"] = pattern_found.get("alias", "")
+                            result["tracker_pattern_matched"] = match[0]
+                            
+                            category = trackersdb["categories"].get(pattern_found.get("category")) if pattern_found.get("category") else {}
+                            result["category"] = category.get("name", "")
+                            result["category_description"] = category.get("description", "")
 
-                        organization = trackersdb["organizations"].get(pattern_found.get("organization")) if pattern_found.get("organization") else {}
-                        result["organization"] = organization.get("name", "")
-                        result["org_description"] = organization.get("description", "")
-                        result["org_country"] = organization.get("country", "")
-                        result["org_privacy_policy_url"] = organization.get("privacy_policy_url", "")
-                        result["org_privacy_contact"] = organization.get("privacy_contact", "")
+                            organization = trackersdb["organizations"].get(pattern_found.get("organization")) if pattern_found.get("organization") else {}
+                            result["organization"] = organization.get("name", "")
+                            result["org_description"] = organization.get("description", "")
+                            result["org_country"] = organization.get("country", "")
+                            result["org_privacy_policy_url"] = organization.get("privacy_policy_url", "")
+                            result["org_privacy_contact"] = organization.get("privacy_contact", "")
 
-                        if not writer:
-                            writer = csv.DictWriter(outfile, fieldnames=result.keys())
-                            writer.writeheader()
-                        writer.writerow(result)                
+                            if not writer:
+                                writer = csv.DictWriter(outfile, fieldnames=result.keys())
+                                writer.writeheader()
+                            writer.writerow(result)                
 
         if matching_items == 0:
             self.dataset.update_status("No items matched your criteria", is_final=True)
