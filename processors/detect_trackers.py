@@ -25,7 +25,7 @@ __email__ = "4cat@oilab.eu"
 
 csv.field_size_limit(1024 * 1024 * 1024)
 
-url_regex = re.compile(r"(https?:\/\/)?([a-zA-Z0-9.-]+\.)?[a-zA-Z0-9.-]+(?=[\/\?\:\#]|$)")
+url_regex = re.compile(r"https?:\/\/[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?=[\/\:\#]|$)", re.UNICODE)
 def match_trackers(args):
     """
     Check if the substring is in the value and then check if any regex patterns match. First check for
