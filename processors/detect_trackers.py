@@ -25,6 +25,7 @@ __email__ = "4cat@oilab.eu"
 
 csv.field_size_limit(1024 * 1024 * 1024)
 
+# Regex to match URLs; does not include query strings or fragments
 url_regex = re.compile(r"https?:\/\/[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?=[\/\:\#]|$)", re.UNICODE)
 def match_trackers(args):
     """
@@ -143,11 +144,9 @@ class DetectTrackers(BasicProcessor):
 
                     self.dataset.update_progress(i/self.source_dataset.num_rows)
                     self.dataset.update_status("Searching for trackers in item %i of %i" % (i+1, self.source_dataset.num_rows))
-                    self.dataset.log("Item %s" % self.get_item_label(item))
                     
                     # Extract URLs from the value
                     potential_urls = set(url_regex.findall(value))
-                    # self.dataset.log("Potential URLs: %s" % potential_urls)
 
                     # Search for trackers
                     results = pool.map(
@@ -155,16 +154,6 @@ class DetectTrackers(BasicProcessor):
                         [(substring, regex_list, potential_urls) for substring, regex_list in trackersdb["regex_patterns"].items()]
                     )
                     matches = [match for sublist in results for match in sublist]
-
-                    # for substring, regex_list in trackersdb["regex_patterns"].items():
-                    #     # Check for substring before using regex
-                    #     if substring in value:
-                    #         # Now check for exact regex pattern associated with substring
-                    #         for regex in regex_list:
-                    #             pattern_key = regex["pattern_key"]
-                    #             regex_pattern = regex["regex_pattern"]
-                    #             if regex_pattern.search(value):
-                    #                 matches.append((regex_pattern.pattern, pattern_key))
                             
                     if matches:
                         matching_items += 1
