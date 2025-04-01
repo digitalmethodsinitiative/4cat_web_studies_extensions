@@ -43,7 +43,7 @@ def match_trackers(args):
     for potential_url in potential_urls:
         if substring in potential_url:
             for regex in regex_list:
-                if regex["regex_pattern"].search(potential_url):
+                if regex["regex_pattern"].search(potential_url[0]): # Use the full match from the broad regex
                     matches.append((regex["regex_pattern"].pattern, regex["pattern_key"]))
     return matches
 
