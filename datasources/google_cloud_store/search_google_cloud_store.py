@@ -8,7 +8,7 @@ from selenium.webdriver.support.expected_conditions import staleness_of
 
 from extensions.web_studies.selenium_scraper import SeleniumSearch, SeleniumWrapper
 from backend.lib.worker import BasicWorker
-from common.lib.exceptions import ProcessorInterruptedException, ProcessorException, TimeoutException
+from common.lib.exceptions import ProcessorInterruptedException, ProcessorException, TimeoutException, QueryParametersException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
 from common.config_manager import config
@@ -201,6 +201,7 @@ class SearchGoogleCloudStore(SeleniumSearch):
                     sub_title_block = result.find_elements(*sub_title_identifier)
                     description_block = result.find_elements(*description_identifier)
                     thumb_block = result.find_elements(By.XPATH, ".//img")
+                    sub_title_text = None
 
                     if method == "categories":
                         type_block = result.find_elements(By.XPATH, ".//dt[contains(text(), 'Type ')]/../dd")
@@ -212,7 +213,6 @@ class SearchGoogleCloudStore(SeleniumSearch):
                                 sub_title_text = sub_title_block[0].text.replace(type_block[0].text, "") if sub_title_block else None
                         else:
                             type_block = None
-                            sub_title_text = None
 
                     yield {
                         "collected_at": collected_at.strftime("%Y-%m-%d %H:%M:%S"),
