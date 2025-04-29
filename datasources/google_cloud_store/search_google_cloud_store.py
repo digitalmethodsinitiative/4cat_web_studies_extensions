@@ -8,7 +8,7 @@ from selenium.webdriver.support.expected_conditions import staleness_of
 
 from extensions.web_studies.selenium_scraper import SeleniumSearch, SeleniumWrapper
 from backend.lib.worker import BasicWorker
-from common.lib.exceptions import ProcessorInterruptedException, ProcessorException
+from common.lib.exceptions import ProcessorInterruptedException, ProcessorException, TimeoutException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
 from common.config_manager import config
