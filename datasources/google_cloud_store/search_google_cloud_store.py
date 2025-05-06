@@ -5,10 +5,11 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.expected_conditions import staleness_of
+from selenium.common.exceptions import TimeoutException
 
 from extensions.web_studies.selenium_scraper import SeleniumSearch, SeleniumWrapper
 from backend.lib.worker import BasicWorker
-from common.lib.exceptions import ProcessorInterruptedException, ProcessorException, TimeoutException, QueryParametersException
+from common.lib.exceptions import ProcessorInterruptedException, ProcessorException, QueryParametersException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
 from common.config_manager import config
