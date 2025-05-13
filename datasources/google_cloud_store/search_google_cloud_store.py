@@ -119,6 +119,7 @@ class SearchGoogleCloudStore(SeleniumSearch):
         max_results = self.parameters.get("amount", 40)
 
         # Identifiers depend on method
+        empty_state_identifier = (By.XPATH, "//cfc-empty-state")
         if method == "categories":
             result_total_identifier = (By.CLASS_NAME, "cfc-shelf-header")
             result_blocks_identifier = (By.TAG_NAME, "cfc-result-card")
@@ -170,7 +171,19 @@ class SearchGoogleCloudStore(SeleniumSearch):
                 WebDriverWait(self.driver, 5).until(EC.presence_of_element_located(result_total_identifier))
                 results_header = self.driver.find_elements(*result_total_identifier)
             except TimeoutException:
+                # Unable to find results header
                 results_header = None
+                # Check if no results
+                try:
+                    WebDriverWait(self.driver, 5).until(EC.presence_of_element_located(empty_state_identifier))
+                    empty_state_element = self.driver.find_element(By.XPATH, "//cfc-empty-state")
+                    if "No results found\nTry searching again" == empty_state_element.text.strip():
+                        self.dataset.log(f"No results found for {query}")
+                        continue
+                except TimeoutException:
+                    # Unable to find empty state; perhaps only results header is missing
+                    pass
+
             if not results_header:
                 # Unknown number results
                 self.log.warning(f"Unable to parse Google Cloud results; page format may have changed")
@@ -184,7 +197,12 @@ class SearchGoogleCloudStore(SeleniumSearch):
                     results_count = None
 
             # Collect product search result blocks
-            WebDriverWait(self.driver, 5).until(EC.presence_of_element_located(result_blocks_identifier))
+            try:
+                WebDriverWait(self.driver, 5).until(EC.presence_of_element_located(result_blocks_identifier))
+            except TimeoutException:
+                self.dataset.update_status(f"Unable to find Google Cloud results for {query}; page format may have changed, administrators have been notified")
+                self.log.warning(f"Unable to parse Google Cloud results; page format may have changed ({self.dataset.key} w/ query {query})")
+                continue
             results = self.driver.find_elements(*result_blocks_identifier)
             if not results:
                 self.log.warning(f"Unable to parse results for query {query}")
