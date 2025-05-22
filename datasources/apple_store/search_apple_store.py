@@ -13,15 +13,17 @@ from itunes_app_scraper.util import AppStoreException, AppStoreCollections
 from google_play_scraper.util import PlayStoreCollections
 from itunes_app_scraper.util import AppStoreCollections
 
+from bs4 import BeautifulSoup
 
 from backend.lib.search import Search
-from common.lib.exceptions import ProcessorInterruptedException
+from common.lib.exceptions import ProcessorInterruptedException, ProcessorException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
 
 
 class AppStoreConnectionError(Exception):
     pass
+
 
 class SearchAppleStore(Search):
     """
@@ -154,6 +156,8 @@ class SearchAppleStore(Search):
 
         results = []
 
+        consecutive_errors = 0
+
         if not self.parameters.get('beta_details', False):
             self.dataset.log(f"Collecting {method} from Apple Store")
             results += collect_from_store('apple', method, languages=re.split(',|\n', self.parameters.get('languages')), countries=re.split(',|\n', self.parameters.get('countries')), full_detail=self.parameters.get('full_details', False), params=params, log=self.dataset.log)
@@ -173,7 +177,14 @@ class SearchAppleStore(Search):
                     try:
                         results.append(self.collect_detailed_data_from_apple_store_by_id(app['id'], country, lang))
                     except AppStoreConnectionError as e:
-                        self.dataset.log(f"Error collecting app {app['id']}: {e}")
+                        self.dataset.update_status(f"Error collecting app {app['id']}: {e}")
+                        continue
+                    except ProcessorException as e:
+                        self.dataset.update_status(f"Error collecting app {app['id']}: {e}")
+                        consecutive_errors += 1
+                        if consecutive_errors > 5:
+                            self.dataset.update_status(f"Too many errors collecting apps; see log for details", is_final=True)
+                            break
                         continue
                 else:
                     # List of apps only contains IDs
@@ -189,6 +200,14 @@ class SearchAppleStore(Search):
                     except AppStoreConnectionError as e:
                         self.dataset.log(f"Error collecting app {app}: {e}")
                         continue
+                    except ProcessorException as e:
+                        self.dataset.update_status(f"Error collecting app {app['id']}: {e}")
+                        consecutive_errors += 1
+                        if consecutive_errors > 5:
+                            self.dataset.update_status(f"Too many errors collecting apps; see log for details", is_final=True)
+                            break
+                        continue
+
         if results:
             self.dataset.log(f"Collected {len(results)} results from Apple Store")
             return [{"4CAT_metadata": {"query_method": method, "collected_at_timestamp": datetime.datetime.now().timestamp(), "item_index": i, "beta": self.parameters.get('beta_details', False)}, **result} for i, result in enumerate(results)]
@@ -502,7 +521,7 @@ class SearchAppleStore(Search):
     @staticmethod
     def collect_detailed_data_from_apple_store_by_id(app_id, country_id="us", lang="en-us"):
         """
-        Collect App details from Apple Store
+        Collect App details from Apple Store using amp-api.apps.apple.com API.
 
         This is to take advantage of a different endpoint found from looking up apps at https://apps.apple.com/.
         """
@@ -512,59 +531,100 @@ class SearchAppleStore(Search):
         response = requests.get(token_url, headers={'User-Agent': user_agent})
         if response.status_code != 200:
             raise AppStoreConnectionError(f"Unable to connect to {token_url}: {response.status_code} {response.reason}")
-        html = response.text
+        
+        # Parse the HTML to find our embedded JSON
+        soup = BeautifulSoup(response.text, 'html.parser')
+        script_content = []
+        # Find possible JSON data in <script> tags
+        for script in soup.find_all('script'):
+            if script.string:
+                # extract the JSON string
+                try:
+                    json_data = json.loads(script.string)
+                    script_content.append(json_data)
+                except json.JSONDecodeError:
+                    pass
 
-        reg_exp = re.compile(r'token%22%3A%22([^%]+)%22%7D')
-        match = reg_exp.search(html)
-        token = match.group(1)
-        if not token:
-            raise AppStoreConnectionError("Unable to find token to collect data from apps.apple.com")
+        if not script_content:
+            raise ProcessorException("Beta endpoint: Unable to find any embedded JSON data in the HTML response")
+        
+        # Search for desired JSON object
+        desired_keys = ["id", "type", "href", "attributes"]
+        app_data = None
+        while not app_data and script_content:
+            obj = script_content.pop(0)
+            if isinstance(obj, dict):
+                if all(key in obj for key in desired_keys):
+                    app_data = obj
+                    break
+                else:
+                    script_content.extend(obj.values())
+            elif isinstance(obj, list):
+                script_content.extend(obj)
+            elif isinstance(obj, str):
+                try:
+                    obj = json.loads(obj)
+                    script_content.append(obj)
+                except json.JSONDecodeError:
+                    pass
 
-        # Collect data
-        # Copied from browser request
-        url = f"https://amp-api.apps.apple.com/v1/catalog/{country_id}/apps/{app_id}?l={lang}&platform=web&additionalPlatforms=appletv,ipad,iphone,mac&" \
-              "extend=customPromotionalText,customScreenshotsByType,customVideoPreviewsByType,description,developerInfo,distributionKind,editorialVideo,fileSizeByDevice,messagesScreenshots,privacy,privacyPolicyUrl,requirementsByDeviceFamily,sellerInfo,supportURLForLanguage,versionHistory,websiteUrl,videoPreviewsByType&" \
-              "include=app-events,genres,developer,reviews,merchandised-in-apps,customers-also-bought-apps,developer-other-apps,top-in-apps,related-editorial-items&" \
-              "limit[merchandised-in-apps]=20&" \
-              "omit[resource]=autos&" \
-              "meta=robots&" \
-              "sparseLimit[apps:related-editorial-items]=20&" \
-              "sparseLimit[apps:customers-also-bought-apps]=20&" \
-              "sparseLimit[app:developer-other-apps]=20"
+        if not app_data:
+            raise ProcessorException("Beta endpoint: Unable to find desired JSON object in the HTML response")
+        return app_data
 
-        headers = {
-            'Accept': '*/*',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Origin': 'https://apps.apple.com',
-            'Authorization': f"Bearer {token}",
-            'User-Agent': user_agent
-        }
 
-        response = requests.get(url, headers=headers)
+        # 2025-05-22; appears amp-api does not directly work anymore
+        # reg_exp = re.compile(r'token%22%3A%22([^%]+)%22%7D')
+        # match = reg_exp.search(html)
+        # token = match.group(1)
+        # if not token:
+        #     raise AppStoreConnectionError("Unable to find token to collect data from apps.apple.com")
 
-        if response.status_code != 200:
-            try:
-                json_data = json.loads(response.text)
-            except json.JSONDecodeError:
-                json_data = {}
+        # # Collect data
+        # # Copied from browser request
+        # url = f"https://amp-api.apps.apple.com/v1/catalog/{country_id}/apps/{app_id}?l={lang}&platform=web&additionalPlatforms=appletv,ipad,iphone,mac&" \
+        #       "extend=customPromotionalText,customScreenshotsByType,customVideoPreviewsByType,description,developerInfo,distributionKind,editorialVideo,fileSizeByDevice,messagesScreenshots,privacy,privacyPolicyUrl,requirementsByDeviceFamily,sellerInfo,supportURLForLanguage,versionHistory,websiteUrl,videoPreviewsByType&" \
+        #       "include=app-events,genres,developer,reviews,merchandised-in-apps,customers-also-bought-apps,developer-other-apps,top-in-apps,related-editorial-items&" \
+        #       "limit[merchandised-in-apps]=20&" \
+        #       "omit[resource]=autos&" \
+        #       "meta=robots&" \
+        #       "sparseLimit[apps:related-editorial-items]=20&" \
+        #       "sparseLimit[apps:customers-also-bought-apps]=20&" \
+        #       "sparseLimit[app:developer-other-apps]=20"
 
-            if "Invalid Parameter Value" in [error.get("title", '') for error in json_data.get("errors", [])]:
-                raise AppStoreConnectionError(f"Invalid Parameter Value: {' '.join([error.get('detail', '') for error in json_data.get('errors', [])])}")
-            else:
-                raise AppStoreConnectionError(f"Unable to collect data from Apple internal API (app {app_id}): {response.status_code} {response.reason} - {response.text}")
+        # headers = {
+        #     'Accept': '*/*',
+        #     'Accept-Encoding': 'gzip, deflate, br',
+        #     'Origin': 'https://apps.apple.com',
+        #     'Authorization': f"Bearer {token}",
+        #     'User-Agent': user_agent
+        # }
 
-        if len(response.text) == 0:
-            raise ValueError(f"No result returned: app - {app_id}, country - {country_id}, lang - {lang}")
+        # response = requests.get(url, headers=headers)
 
-        data = json.loads(response.text)
-        if not data.get('data'):
-            raise ValueError(f"App not found (404): app - {app_id}, country - {country_id}, lang - {lang}")
-        elif len(data['data']) == 0:
-            raise ValueError(f"App not found (404): app - {app_id}, country - {country_id}, lang - {lang}")
-        elif len(data['data']) > 1:
-            raise ValueError(f"Multiple apps found (500): app - {app_id}, country - {country_id}, lang - {lang}")
-        else:
-            return data['data'][0]
+        # if response.status_code != 200:
+        #     try:
+        #         json_data = json.loads(response.text)
+        #     except json.JSONDecodeError:
+        #         json_data = {}
+
+        #     if "Invalid Parameter Value" in [error.get("title", '') for error in json_data.get("errors", [])]:
+        #         raise AppStoreConnectionError(f"Invalid Parameter Value: {' '.join([error.get('detail', '') for error in json_data.get('errors', [])])}")
+        #     else:
+        #         raise AppStoreConnectionError(f"Unable to collect data from Apple internal API (app {app_id}): {response.status_code} {response.reason} - {response.text}")
+
+        # if len(response.text) == 0:
+        #     raise ValueError(f"No result returned: app - {app_id}, country - {country_id}, lang - {lang}")
+
+        # data = json.loads(response.text)
+        # if not data.get('data'):
+        #     raise ValueError(f"App not found (404): app - {app_id}, country - {country_id}, lang - {lang}")
+        # elif len(data['data']) == 0:
+        #     raise ValueError(f"App not found (404): app - {app_id}, country - {country_id}, lang - {lang}")
+        # elif len(data['data']) > 1:
+        #     raise ValueError(f"Multiple apps found (500): app - {app_id}, country - {country_id}, lang - {lang}")
+        # else:
+        #     return data['data'][0]
 
 
 def collect_from_store(store, method, languages=None, countries=None, full_detail=False, params={}, log=print):
