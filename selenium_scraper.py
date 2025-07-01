@@ -19,7 +19,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import WebDriverException, SessionNotCreatedException, UnexpectedAlertPresentException, \
-TimeoutException, JavascriptException, NoAlertPresentException, ElementClickInterceptedException, InvalidSessionIdException
+TimeoutException, JavascriptException, NoAlertPresentException, ElementClickInterceptedException, InvalidSessionIdException, \
+ElementNotInteractableException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
@@ -658,14 +659,15 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         :param max_time:  Maximum time to attempt to click button
         """
         start_time = time.time()
+        scrolled = False
         while True:
             try:
                 button.click()
                 self.selenium_log.debug("button clicked!")
-                break
+                return True
             except ElementClickInterceptedException as e:
                 if time.time() - start_time > max_time:
-                    break
+                    return False
                 error = e
                 self.selenium_log.debug(f"destroy_to_click: {error.msg}")
 
@@ -678,6 +680,69 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
 
                 self.driver.execute_script(
                     f"document.querySelector('{error_element_type}{'.' + error_element_class if error_element_class else ''}').remove();")
+            except ElementNotInteractableException:
+                if time.time() - start_time > max_time:
+                    return False
+                if not scrolled:
+                    scrolled = True
+                    # Try to scroll the button into view
+                    try:
+                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
+                        time.sleep(1)
+                    except JavascriptException as e:
+                        self.selenium_log.debug(f"JavascriptException while scrolling into view: {e}")
+                else:
+                    self.selenium_log.debug("ElementNotInteractableException: consecutive unable to scroll into view and click")
+                    return False
+               
+
+    def smart_click(self, button, max_time=10, strategies=['direct', 'scroll', 'wait', 'javascript', 'actions', 'destroy']):
+        """
+        Intelligently attempt to click a button using multiple strategies
+        
+        :param button: The button element to click
+        :param max_time: Maximum time to spend attempting
+        :param strategies: List of strategies to try in order
+        """
+        start_time = time.time()
+        
+        for strategy in strategies:
+            if time.time() - start_time > max_time:
+                self.selenium_log.warning(f"smart_click timeout after {max_time}s")
+                return False
+                
+            try:
+                if strategy == 'direct':
+                    button.click()
+                    return True
+                    
+                elif strategy == 'scroll':
+                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
+                    time.sleep(1)
+                    button.click()
+                    return True
+                    
+                elif strategy == 'wait':
+                    WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable(button))
+                    button.click()
+                    return True
+                    
+                elif strategy == 'javascript':
+                    self.driver.execute_script("arguments[0].click();", button)
+                    return True
+                    
+                elif strategy == 'actions':
+                    ActionChains(self.driver).move_to_element(button).click().perform()
+                    return True
+                    
+                elif strategy == 'destroy':
+                    return self.destroy_to_click(button, max_time - (time.time() - start_time))
+                    
+            except Exception as e:
+                self.selenium_log.debug(f"Strategy '{strategy}' failed: {e}")
+                continue
+                
+        return False            
 
     @classmethod
     def is_selenium_available(cls):

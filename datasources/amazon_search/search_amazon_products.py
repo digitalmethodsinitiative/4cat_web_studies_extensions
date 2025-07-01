@@ -329,7 +329,10 @@ class AmazonProductSearch(SeleniumSearch):
                         # Check if there is a next page and click if so
                         next_button = carousel.find_elements(By.XPATH, ".//div[contains(@class, 'a-carousel-right')]")
                         if next_button and current < final:
-                            self.destroy_to_click(next_button[0].find_element(By.XPATH, ".//span[contains(@class, 'a-button-inner')]"))
+                            click_success = self.smart_click(next_button[0].find_element(By.XPATH, ".//span[contains(@class, 'a-button-inner')]"))
+                            if not click_success:
+                                self.dataset.log(f"Unable to click next button for carousel {heading_text} on {url}; continuing to next carousel")
+                                break
                             try:
                                 WebDriverWait(carousel, 10).until(EC.text_to_be_present_in_element(
                                     (By.XPATH, ".//span[contains(@class, 'a-carousel-page-current')]"), str(current + 1)))
@@ -426,7 +429,7 @@ class AmazonProductSearch(SeleniumSearch):
 
                 NOTE: using rec_type defined immediately above via loop.
                 """
-                if rec_type == str:
+                if rec_type is str:
                     # These are the links; originally all that was collected
                     return rec
                 else:
