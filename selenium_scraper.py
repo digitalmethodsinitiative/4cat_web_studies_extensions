@@ -11,7 +11,6 @@ from requests.utils import requote_uri
 
 from backend.lib.search import Search
 from common.lib.exceptions import ProcessorException
-from common.config_manager import config
 from common.lib.user_input import UserInput
 
 from selenium import webdriver
@@ -50,17 +49,29 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
     last_scraped_url = None
     browser = None
     eager_selenium = False
+    selenium_log = None
+    config = None
+    _setup_done = False
 
     consecutive_errors = 0
     num_consecutive_errors_before_restart = 3
 
-    # I would prefer to use our log class but it seems to cause issue with selenium's logger
-    formatter = CustomFormatter('%(asctime)s - %(name)s - %(levelname)s - %(location)s - %(message)s')
-    selenium_log = logging.getLogger('selenium')
-    selenium_log.setLevel(logging.INFO)
-    file_handler = logging.FileHandler(config.get("PATH_LOGS").joinpath('selenium.log'))
-    file_handler.setFormatter(formatter)
-    selenium_log.addHandler(file_handler)
+    def setup(self, config):
+        """
+        Setup the SeleniumWrapper. This injects the config object and sets up the logger.
+        """
+        self.config = config
+
+        # Setup the logger
+        # I would prefer to use our log class but it seems to cause issue with selenium's logger
+        formatter = CustomFormatter('%(asctime)s - %(name)s - %(levelname)s - %(location)s - %(message)s')
+        selenium_log = logging.getLogger('selenium')
+        selenium_log.setLevel(logging.INFO)
+        file_handler = logging.FileHandler(self.config.get("PATH_LOGS").joinpath('selenium.log'))
+        file_handler.setFormatter(formatter)
+        selenium_log.addHandler(file_handler)
+
+        self._setup_done = True
 
     def get_with_error_handling(self, url, max_attempts=1, wait=0, restart_browser=False):
         """
@@ -196,24 +207,35 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         else:
             return False
 
-    def start_selenium(self, eager=None):
+    def start_selenium(self, eager=None, config=None):
         """
         Start a headless browser
 
         :param bool eager:  Eager loading? If None, uses class attribute self.eager_selenium (default False)
         """
+        # Ensure we have a config object
+        if not self._setup_done:
+            # config can be passed directly
+            if config is not None:
+                self.setup(config)
+            elif self.config is not None:
+                # BasicWorkers (e.g., Search) will have a config object set during `process`
+                self.setup(self.config)
+            else:
+                raise ProcessorException("SeleniumWrapper not setup; please call setup() with a config object before starting Selenium.")
+
         if eager is not None:
             # Update eager loading
             self.eager_selenium = eager
 
-        self.browser = config.get('selenium.browser')
+        self.browser = self.config.get('selenium.browser')
         # Selenium options
         # TODO review and compare Chrome vs Firefox options
         if self.browser == 'chrome':
             from selenium.webdriver.chrome.options import Options
         elif self.browser == 'firefox':
             from selenium.webdriver.firefox.options import Options
-            profile = webdriver.FirefoxProfile(config.get("PATH_ROOT").joinpath("config/"))
+            profile = webdriver.FirefoxProfile(self.config.get("PATH_ROOT").joinpath("config/"))
             profile.set_preference("dom.webdriver.enabled", False)
             profile.set_preference('useAutomationExtension', False)
             profile.update_preferences()
@@ -234,9 +256,9 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
 
         try:
             if self.browser == 'chrome':
-                self.driver = webdriver.Chrome(executable_path=config.get('selenium.selenium_executable_path'), options=options)
+                self.driver = webdriver.Chrome(executable_path=self.config.get('selenium.selenium_executable_path'), options=options)
             elif self.browser == 'firefox':
-                self.driver = webdriver.Firefox(executable_path=config.get('selenium.selenium_executable_path'), options=options, firefox_profile=profile, desired_capabilities=desired)
+                self.driver = webdriver.Firefox(executable_path=self.config.get('selenium.selenium_executable_path'), options=options, firefox_profile=profile, desired_capabilities=desired)
                 self.driver.maximize_window() # most users browse maximized
             else:
                 if hasattr(self, 'dataset'):
@@ -745,13 +767,18 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         return False            
 
     @classmethod
-    def is_selenium_available(cls):
+    def is_selenium_available(cls, config=None):
         """
         Checks for browser and webdriver
         """
-        if not shutil.which(config.get("selenium.selenium_executable_path")):
+        if config is not None:
+            cls.config = config
+        elif cls.config is None:
+            raise ProcessorException("SeleniumWrapper not configured; please call setup() with a config object before checking availability.")
+        
+        if not shutil.which(cls.config.get("selenium.selenium_executable_path")):
             return False
-        if not shutil.which(config.get("selenium.browser")):
+        if not shutil.which(cls.get("selenium.browser")):
             return False
 
         return True
@@ -833,7 +860,7 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
         :param dict query:  Query parameters
         :return:  Iterable of matching items, or None if there are no results.
         """
-        if not self.is_selenium_available():
+        if not self.is_selenium_available(config=self.config):
             raise ProcessorException("Selenium not available; please ensure browser and webdriver are installed and configured in settings")
 
         try:

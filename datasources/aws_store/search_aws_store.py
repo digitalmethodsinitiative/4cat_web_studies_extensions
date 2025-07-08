@@ -14,8 +14,6 @@ from common.lib.user_input import UserInput
 from extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.helpers import url_to_hash
 
-from common.config_manager import config
-
 
 class SearchAwsStore(SeleniumSearch):
     """
@@ -60,14 +58,14 @@ class SearchAwsStore(SeleniumSearch):
 
 
     @classmethod
-    def is_compatible_with(cls, module=None, user=None):
+    def is_compatible_with(cls, module=None, config=None):
         """
         Allow if Selenium is available
         """
-        return SeleniumSearch.is_selenium_available()
+        return SeleniumSearch.is_selenium_available(config=config)
 
     @classmethod
-    def get_options(cls, parent_dataset=None, user=None):
+    def get_options(cls, parent_dataset=None, config=None):
         max_results = cls.max_results
         options = {
             "intro-1": {
@@ -128,7 +126,7 @@ class SearchAwsStore(SeleniumSearch):
         :param query:
         :return:
         """
-        if not self.is_selenium_available():
+        if not self.is_selenium_available(config=self.config):
             self.dataset.update_status("Selenium not available; unable to collect from AWS Store.", is_final=True)
             return
 
@@ -145,7 +143,7 @@ class SearchAwsStore(SeleniumSearch):
 
         # Filter mappings
         filter_options = {}
-        all_filters = config.get("cache.aws.query_options", {})
+        all_filters = self.config.get("cache.aws.query_options", {})
         for filter_name, filters in all_filters.items():
             if filter_name not in self.query_param_map:
                 self.log.warning(f"AWS Unknown filter name ({self.dataset.key}): {filter_name}")
@@ -382,7 +380,7 @@ class SearchAwsStore(SeleniumSearch):
         })
 
     @staticmethod
-    def validate_query(query, request, user):
+    def validate_query(query, request, config):
         """
         Validate input for a dataset query on the data source.
 
@@ -432,9 +430,15 @@ class AwsStoreCategories(BasicWorker):
     """
     type = "aws-store-category-collector"  # job ID
 
-    # Run every day to update categories
-    if "aws-store" in config.get("datasources.enabled"):
-        ensure_job = {"remote_id": "aws-store-category-collector", "interval": 86400}
+    @classmethod
+    def ensure_job(cls, config=None):
+        """
+        Ensure job is scheduled to run every day
+        """
+        # Run every day to update categories
+        if "aws-store" in config.get("datasources.enabled"):
+            return {"remote_id": "aws-store-category-collector", "interval": 86400}
+        return None
 
     def work(self):
         """
@@ -442,7 +446,7 @@ class AwsStoreCategories(BasicWorker):
         """
         categories_url = SearchAwsStore.base_url
         selenium_wrapper = SeleniumWrapper()
-        if not selenium_wrapper.is_selenium_available():
+        if not selenium_wrapper.is_selenium_available(config=self.config):
             raise ProcessorException("Selenium is not available; cannot collect categories from AWS Store")
 
         # Backend runs get_options for each processor on init; but does not seem to have logging
@@ -462,8 +466,8 @@ class AwsStoreCategories(BasicWorker):
             category_filters = self.get_category_filters(selenium_wrapper=selenium_wrapper, logger=self.log)
             if category_filters:
                 self.log.info(f"Collected {len(category_filters)} query types with a total of {len(sum(category_filters.values(), []))} options for the AWS Store")
-                config.set("cache.aws.query_options", category_filters)
-                config.set("cache.aws.query_options_updated_at", datetime.now().timestamp())
+                self.config.set("cache.aws.query_options", category_filters)
+                self.config.set("cache.aws.query_options_updated_at", datetime.now().timestamp())
             else:
                 self.log.warning("Failed to collect category options from AWS Store")
 

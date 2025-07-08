@@ -9,7 +9,6 @@ import random
 from ural import is_url
 from requests.utils import requote_uri
 
-from common.config_manager import config
 from extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException, QueryNeedsExplicitConfirmationException
 from common.lib.item_mapping import MappedItem
@@ -27,7 +26,7 @@ class SearchWithSelenium(SeleniumSearch):
     extension = "ndjson"
 
     @classmethod
-    def get_options(cls, parent_dataset=None, user=None):
+    def get_options(cls, parent_dataset=None, config=None):
         options = {
             "intro-1": {
                 "type": UserInput.OPTION_INFO,
@@ -48,7 +47,7 @@ class SearchWithSelenium(SeleniumSearch):
             },
 
         }
-        if config.get("selenium.display_advanced_options", False, user=user):
+        if config.get("selenium.display_advanced_options", default=False):
             options["subpages"] = {
                 "type": UserInput.OPTION_TEXT,
                 "help": "Crawl additional links/subpages",
@@ -267,7 +266,7 @@ class SearchWithSelenium(SeleniumSearch):
 
 
     @staticmethod
-    def validate_query(query, request, user):
+    def validate_query(query, request, config):
         """
         Validate input for a dataset query on the Selenium Webpage Scraper.
 

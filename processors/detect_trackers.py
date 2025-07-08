@@ -15,7 +15,6 @@ from backend.lib.processor import BasicProcessor
 from backend.lib.worker import BasicWorker
 from common.lib.exceptions import WorkerInterruptedException
 from common.lib.helpers import UserInput
-from common.config_manager import config
 
 
 __author__ = "Dale Wahl"
@@ -56,9 +55,7 @@ class DetectTrackers(BasicProcessor):
     type = "tracker-extractor"  # job type ID
     category = "Post metrics"  # category
     title = "Detect Trackers"  # title displayed in UI
-    last_updated = config.get("cache.ghostery.db_updated_at", 0)
-    last_updated = datetime.fromtimestamp(last_updated).strftime("%Y-%m-%d") if last_updated != 0 else False
-    description = f"Identifies URL patterns in HTML or text identified by Ghostery {'(updated ' + last_updated + ') ' if last_updated else ''}to be used by tracking tools in the selected column. A row for each detected tracker is created in the results."  # description displayed in UI
+    description = "Identifies URL patterns in HTML or text identified by Ghostery to be used by tracking tools in the selected column. A row for each detected tracker is created in the results."  # description displayed in UI
     extension = "csv"  # extension of result file, used internally and in UI
 
     references = [
@@ -77,7 +74,7 @@ class DetectTrackers(BasicProcessor):
     }
 
     @classmethod
-    def is_compatible_with(cls, module=None, user=None):
+    def is_compatible_with(cls, module=None, config=None):
         """
         Allow processor on datasets.
 
@@ -89,7 +86,7 @@ class DetectTrackers(BasicProcessor):
         return GhosteryDataUpdater.trackerdb_file.exists() and module.get_extension() in ["csv", "ndjson"]
 
     @classmethod
-    def get_options(cls, parent_dataset=None, user=None):
+    def get_options(cls, parent_dataset=None, config=None):
         options = cls.options
         if not parent_dataset:
             return options
@@ -282,15 +279,8 @@ class GhosteryDataUpdater(BasicWorker):
     """
     type = "ghostery-data-collector"  # job ID
 
-    # Run every day to update categories
-    if sys.platform == "linux":
-        # Only queue job if system is linux
-        ensure_job = {"remote_id": "ghostery-data-collector", "interval": 86400}
-
     repo_url = "https://github.com/ghostery/trackerdb.git"
     repo_latest_release = "https://api.github.com/repos/ghostery/trackerdb/releases/latest"
-    ghostery_repo = config.get("PATH_ROOT").joinpath("config/ghostery")
-    trackerdb_file = ghostery_repo.joinpath("dist/trackerdb.json")
 
     config = {
         "cache.ghostery.db_updated_at": {
@@ -310,6 +300,16 @@ class GhosteryDataUpdater(BasicWorker):
         }
     }
 
+    @classmethod
+    def ensure_job(cls, config=None):
+        """
+        Ensure job is scheduled to run every day
+        """
+        # Run every day to update categories
+        if sys.platform == "linux":
+            # Only queue job if system is linux
+            return {"remote_id": "ghostery-data-collector", "interval": 86400}
+        return None
 
     def ensure_node_installed(self):
         if shutil.which("node") and shutil.which("npm"):
@@ -329,30 +329,32 @@ class GhosteryDataUpdater(BasicWorker):
         
         return True
     
-    def build_tracker_db(self):
+    def build_tracker_db(self, ghostery_repo, trackerdb_file):
         # Clone Ghostery tracker database
         try:
             self.ensure_node_installed()
         except ValueError as e:
             self.log.error(f"Error: {e}\nPlease download Ghostery tracker database manually.\nInstructions available at https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions/blob/main/processors/README.md")
-            return
+            return False
         
         # Build Ghostery tracker database dependencies
-        result = subprocess.run(["npm", "install"], capture_output=True, cwd=self.ghostery_repo)
+        result = subprocess.run(["npm", "install"], capture_output=True, cwd=ghostery_repo)
         if result.returncode != 0:
             self.log.error("Error installing Ghostery tracker database")
-            return
+            return False
         
         # Create trackerdb.json file
-        result = subprocess.run(["node", "scripts/export-json/index.js"], capture_output=True, cwd=self.ghostery_repo)
+        result = subprocess.run(["node", "scripts/export-json/index.js"], capture_output=True, cwd=ghostery_repo)
         if result.returncode != 0:
             self.log.error("Error building Ghostery tracker database")
-            return
+            return False
 
         # Check trackerdb.json file exists
-        if not self.trackerdb_file.exists():
+        if not trackerdb_file.exists():
             self.log.error("trackerdb.json file not found")
-            return
+            return False
+        
+        return True
 
     def get_latest_release(self):
         """Fetch the latest release version from GitHub API."""
@@ -366,19 +368,22 @@ class GhosteryDataUpdater(BasicWorker):
             return None
         
     def work(self):
-        if not self.ghostery_repo.exists():
+        ghostery_repo = self.config.get("PATH_ROOT").joinpath("config/ghostery")
+        trackerdb_file = ghostery_repo.joinpath("dist/trackerdb.json")
+        
+        if not ghostery_repo.exists():
             self.log.info("Cloning Ghostery tracker database and installing")
             # First time running, clone the repository
             latest_release = self.get_latest_release()
-            result = subprocess.run(["git", "clone", self.repo_url, self.ghostery_repo])
+            result = subprocess.run(["git", "clone", self.repo_url, ghostery_repo])
             if result.returncode != 0:
                 self.log.error("Error cloning Ghostery tracker database")
                 return
-            config.set("cache.ghostery.current_release", latest_release)
-            config.set("cache.ghostery.db_updated_at", datetime.now().timestamp())
+            self.config.set("cache.ghostery.current_release", latest_release)
+            self.config.set("cache.ghostery.db_updated_at", datetime.now().timestamp())
             
             # Build the database
-            success = self.build_tracker_db()
+            success = self.build_tracker_db(ghostery_repo, trackerdb_file)
             if success:
                 self.log.info("Ghostery tracker database installed")
 
@@ -388,19 +393,19 @@ class GhosteryDataUpdater(BasicWorker):
             if not latest_release:
                 return
             
-            current_release = config.get("cache.ghostery.current_release")
+            current_release = self.config.get("cache.ghostery.current_release")
             
             if current_release != latest_release:
                 self.log.info(f"Updating Ghostery tracker database from {current_release} to {latest_release}")
                 # Update the repository
-                result = subprocess.run(["git", "pull"], cwd=self.ghostery_repo)
+                result = subprocess.run(["git", "pull"], cwd=ghostery_repo)
                 if result.returncode != 0:
                     self.log.error("Error updating Ghostery tracker database")
                     return
-                config.set("cache.ghostery.current_release", latest_release)
-                config.set("cache.ghostery.db_updated_at", datetime.now().timestamp())
+                self.config.set("cache.ghostery.current_release", latest_release)
+                self.config.set("cache.ghostery.db_updated_at", datetime.now().timestamp())
 
                 # Build the database
-                self.build_tracker_db()
+                self.build_tracker_db(ghostery_repo=ghostery_repo, trackerdb_file=trackerdb_file)
             else:
                 self.log.info("Ghostery tracker database is already up to date")
