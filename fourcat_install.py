@@ -5,8 +5,32 @@ import subprocess
 import argparse
 import re
 import sys
+import os
 import shutil
-from common.config_manager import config
+
+def find_fourcat_root():
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    while current_dir != os.path.dirname(current_dir):  # Stop at filesystem root
+        if os.path.basename(current_dir) == 'extensions':
+            # Found extensions folder, go one level up for 4CAT root
+            return os.path.dirname(current_dir)
+        current_dir = os.path.dirname(current_dir)
+    
+    return None
+
+# Ensure the 4CAT root is in the system path
+# This is necessary to import common modules like config_manager
+fourcat_root = find_fourcat_root()
+if fourcat_root and fourcat_root not in sys.path:
+    sys.path.insert(0, fourcat_root)
+try:
+	from common.config_manager import config
+except ImportError:
+	print("Error importing common.config_manager; please ensure you are running this script from the 4CAT root directory.")
+	if fourcat_root:
+		print(f"DEBUG: 4CAT root at {fourcat_root}")
+	exit(1)
 
 
 if __name__ == "__main__":
