@@ -449,10 +449,9 @@ class AwsStoreCategories(BasicWorker):
         if not selenium_wrapper.is_selenium_available(config=self.config):
             raise ProcessorException("Selenium is not available; cannot collect categories from AWS Store")
 
+        selenium_wrapper.start_selenium()
         # Backend runs get_options for each processor on init; but does not seem to have logging
         selenium_wrapper.selenium_log.info(f"Fetching category options from AWS Store {categories_url}")
-
-        selenium_wrapper.start_selenium()
         selenium_wrapper.driver.get(categories_url)
         if not selenium_wrapper.check_for_movement():
             raise ProcessorException("Failed to load AWS Store")
