@@ -778,7 +778,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         
         if not shutil.which(cls.config.get("selenium.selenium_executable_path")):
             return False
-        if not shutil.which(cls.get("selenium.browser")):
+        if not shutil.which(cls.config.get("selenium.browser")):
             return False
 
         return True
