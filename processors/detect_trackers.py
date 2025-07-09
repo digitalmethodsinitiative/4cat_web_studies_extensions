@@ -83,7 +83,8 @@ class DetectTrackers(BasicProcessor):
 
         :param module: Dataset or processor to determine compatibility with
         """
-        return GhosteryDataUpdater.trackerdb_file.exists() and module.get_extension() in ["csv", "ndjson"]
+        trackerdb_file = config.get("PATH_ROOT").joinpath("config/ghostery/dist/trackerdb.json")
+        return trackerdb_file.exists() and module.get_extension() in ["csv", "ndjson"]
 
     @classmethod
     def get_options(cls, parent_dataset=None, config=None):
@@ -111,7 +112,11 @@ class DetectTrackers(BasicProcessor):
         column = self.parameters.get("column", "")
 
         self.dataset.update_status('Loading trackers...')
-        trackersdb = self.load_trackers()
+        trackerdb_file = self.config.get("PATH_ROOT").joinpath("config/ghostery/dist/trackerdb.json")
+        if not trackerdb_file.exists():
+            self.dataset.finish_with_error("Ghostery tracker database not found. Please run the Ghostery data updater first.")
+            return
+        trackersdb = self.load_trackers(trackerdb_file)
         num_trackers = sum([len(regex_list) for substring, regex_list in trackersdb["regex_patterns"].items()])
         self.dataset.update_status('Loaded %i regex tracker patterns.' % num_trackers)
         self.dataset.log('Searching for trackers in column %s' % column)
@@ -196,7 +201,7 @@ class DetectTrackers(BasicProcessor):
         self.dataset.finish(trackers_found)
 
     @staticmethod
-    def load_trackers():
+    def load_trackers(trackerdb_file):
         """
         This takes a json database of and extracts two possible filters for trackers: host paths and regex patterns.
         The regex_patherns are more presice, but are incredibly time consuming to search for.
@@ -233,7 +238,7 @@ class DetectTrackers(BasicProcessor):
 
             return (cleaned_rule, compiled_pattern)
 
-        with GhosteryDataUpdater.trackerdb_file.open() as update:
+        with trackerdb_file.open() as update:
             trackerdb = json.load(update)
 
         if any([key not in trackerdb for key in ["domains", "filters"]]):
