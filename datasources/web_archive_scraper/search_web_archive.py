@@ -17,7 +17,6 @@ from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
 from common.lib.helpers import url_to_hash
 
-from common.config_manager import config
 
 class SearchWebArchiveWithSelenium(SeleniumSearch):
     """
@@ -37,7 +36,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
     urls_to_exclude = ['mailto:', 'javascript', 'archive.org/about', 'archive.org/account/']
 
     @classmethod
-    def get_options(cls, parent_dataset=None, user=None):
+    def get_options(cls, parent_dataset=None, config=None):
         options = {
             "intro-1": {
                 "type": UserInput.OPTION_INFO,
@@ -71,7 +70,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
             },
         }
 
-        if config.get("selenium.display_advanced_options", False, user=user):
+        if config.get("selenium.display_advanced_options", default=False):
             options["subpages"] = {
                 "type": UserInput.OPTION_TEXT,
                 "help": "Crawl additional links/subpages",
@@ -401,7 +400,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
             raise Exception('frequency type %s not implemented!' % frequency)
 
     @staticmethod
-    def validate_query(query, request, user):
+    def validate_query(query, request, config):
         """
         Validate input for a dataset query on the Selenium Webpage Scraper.
 

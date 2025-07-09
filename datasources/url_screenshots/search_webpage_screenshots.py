@@ -16,7 +16,6 @@ from extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException
 from common.lib.user_input import UserInput
 from common.lib.helpers import convert_to_int, url_to_hash
-from common.config_manager import config
 from common.lib.helpers import url_to_hash
 
 
@@ -33,7 +32,7 @@ class ScreenshotWithSelenium(SeleniumSearch):
     eager_selenium = True
 
     @classmethod
-    def get_options(cls, parent_dataset=None, user=None):
+    def get_options(cls, parent_dataset=None, config=None):
         options = {
             "intro-1": {
                 "type": UserInput.OPTION_INFO,
@@ -91,7 +90,7 @@ class ScreenshotWithSelenium(SeleniumSearch):
                 "max": 30,
             },
         }
-        if config.get('selenium.firefox_extensions', user=user) and config.get('selenium.firefox_extensions', user=user).get('i_dont_care_about_cookies', {}).get('path'):
+        if config.get('selenium.firefox_extensions') and config.get('selenium.firefox_extensions', default={}).get('i_dont_care_about_cookies', {}).get('path'):
             options["ignore-cookies"] = {
                "type": UserInput.OPTION_TOGGLE,
                "help": "Attempt to ignore cookie walls",
@@ -226,7 +225,7 @@ class ScreenshotWithSelenium(SeleniumSearch):
         return results_path
 
     @staticmethod
-    def validate_query(query, request, user):
+    def validate_query(query, request, config):
         """
         Validate input for a dataset query on the Selenium Webpage Scraper.
 
@@ -246,7 +245,7 @@ class ScreenshotWithSelenium(SeleniumSearch):
         urls = [url.strip() for url in query.get("query", "").replace("\n", ",").split(',')]
         preprocessed_urls = [url for url in urls if ural.is_url(url, require_protocol=True, tld_aware=True, only_http_https=True, allow_spaces_in_path=False)]
 
-        max_sites = config.get("selenium.max_sites", user=user)
+        max_sites = config.get("selenium.max_sites", default=120)
         if len(preprocessed_urls) > max_sites:
             raise QueryParametersException(f"You cannot collect more than {max_sites} screenshots per dataset. If you have more URLs, consider limiting your dataset first by either decreasing the resolution (i.e. fewer screenshots per year) or the length of the dataset (i.e. covering a shorter period of time).")
 

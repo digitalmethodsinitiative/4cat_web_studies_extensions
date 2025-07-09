@@ -4,7 +4,6 @@ import re
 import json
 import requests
 from bs4 import BeautifulSoup
-from common.config_manager import config
 
 from backend.lib.worker import BasicWorker
 from backend.lib.search import Search
@@ -47,7 +46,7 @@ class SearchAzureStore(Search):
     }
 
     @classmethod
-    def get_options(cls, parent_dataset=None, user=None):
+    def get_options(cls, parent_dataset=None, config=None):
         max_results = 1000
         options = {
             "intro-1": {
@@ -89,7 +88,7 @@ class SearchAzureStore(Search):
                 "tooltip": "If enabled, the full details of each application will be included in the output.",
             },
         }
-        categories = config.get("cache.azure.categories", {}, user=user)
+        categories = config.get("cache.azure.categories", default={})
         if categories:
             formatted_categories = {f"{key}": f"{cat.get('cat_title')} - {cat.get('sub_title')}" for key, cat in
                                     categories.items()}
@@ -278,7 +277,7 @@ class SearchAzureStore(Search):
             } for i, soup in enumerate(results, start=1)]
 
     @staticmethod
-    def validate_query(query, request, user):
+    def validate_query(query, request, config):
         """
         Validate input for a dataset query on the data source.
 
@@ -364,10 +363,16 @@ class AzureCategories(BasicWorker):
     type = "azure-store-category-collector"  # job ID
     job_interval = 86400
 
-    # Run every day to update categories
-    if "azure-store" in config.get("datasources.enabled"):
-        ensure_job = {"remote_id": "azure-store-category-collector", "interval": job_interval}
-
+    @classmethod
+    def ensure_job(cls, config=None):
+        """
+        Ensure job is scheduled to run every day
+        """
+        # Run every day to update categories
+        if "azure-store" in config.get("datasources.enabled"):
+            return {"remote_id": "azure-store-category-collector", "interval": cls.job_interval}
+        return None
+    
     def work(self):
         """
         Collect Azure Store categories and store them in database
@@ -410,6 +415,6 @@ class AzureCategories(BasicWorker):
                     # We only pass the key to the backend; so make a unique key that can be parsed (otherwise we could re-request)
                     category_map[main_key + "_--_" + sub_key] = {"cat_key": main_key, "cat_title": cat_title,
                                                                  "sub_key": sub_key, "sub_title": sub_title}
-        config.set("cache.azure.categories", category_map)
-        config.set("cache.azure.categories_updated_at", datetime.datetime.now().timestamp())
+        self.config.set("cache.azure.categories", category_map)
+        self.config.set("cache.azure.categories_updated_at", datetime.datetime.now().timestamp())
         self.log.info(f"Collected category options ({len(category_map)}) from Azure Store")

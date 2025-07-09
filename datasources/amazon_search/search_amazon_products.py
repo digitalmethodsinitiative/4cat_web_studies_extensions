@@ -14,7 +14,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import StaleElementReferenceException, InvalidSessionIdException, TimeoutException
 
-from common.config_manager import config
 from extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException
 from common.lib.item_mapping import MappedItem
@@ -32,7 +31,21 @@ class AmazonProductSearch(SeleniumSearch):
     extension = "ndjson"
     eager_selenium = True
 
-    # Known carousels to collect recommendations
+    known_carousels = [
+        "Customers who bought this item also bought",
+        "Customers who viewed this also viewed",
+        "Products related to this item",
+        "What do customers buy after viewing this item?",
+        'Customers who read this book also read',
+        'What other items do customers buy after viewing this item?',
+        'Best Sellers in this category',
+        'Customers also search',
+        'People who viewed this also viewed',
+        'People who bought this also bought',
+        "All Recommendations",  # SPECIAL type used to crawl all recommendations
+        ]  
+
+    # Dynamic cache for carousels; cannot be used with map_item
     config = {
         "cache.amazon.carousels": {
             "type": UserInput.OPTION_TEXT_JSON,
@@ -52,7 +65,7 @@ class AmazonProductSearch(SeleniumSearch):
     }
 
     @classmethod
-    def get_options(cls, parent_dataset=None, user=None):
+    def get_options(cls, parent_dataset=None, config=None):
         options = {
             "intro-1": {
                 "type": UserInput.OPTION_INFO,
@@ -79,12 +92,12 @@ class AmazonProductSearch(SeleniumSearch):
             "rec_type": {
                 "type": UserInput.OPTION_MULTI_SELECT,
                 "help": "Recommended products to collect.",
-                "options": {k:k for k in config.get("cache.amazon.carousels", [], user=user)},
+                "options": {k:k for k in config.get("cache.amazon.carousels", default=[])},
                 "default": [],
                 "tooltip": "Select the types of recommended products to additionally collect. If none are selected, only the provided urls will be collected. If \"All Recommendations\" is selected, all recommended products will be collected regardless of other selections."
             },
         }
-        if config.get('selenium.firefox_extensions', user=user) and config.get('selenium.firefox_extensions', user=user).get('i_dont_care_about_cookies', {}).get('path'):
+        if config.get('selenium.firefox_extensions') and config.get('selenium.firefox_extensions').get('i_dont_care_about_cookies', {}).get('path'):
             options["ignore-cookies"] = {
                "type": UserInput.OPTION_TOGGLE,
                "help": "Attempt to ignore cookie walls",
@@ -95,13 +108,13 @@ class AmazonProductSearch(SeleniumSearch):
         return options
 
     @classmethod
-    def is_compatible_with(cls, module=None, user=None):
+    def is_compatible_with(cls, module=None, config=None):
         """
         Allow processor on image sets
 
         :param module: Module to determine compatibility with
         """
-        return config.get('selenium.installed', False, user=user)
+        return config.get('selenium.installed', default=False)
 
     def get_items(self, query):
         """
@@ -116,7 +129,7 @@ class AmazonProductSearch(SeleniumSearch):
         urls_to_collect = [{"url": AmazonProductSearch.normalize_amazon_links(url), 'current_depth': 0, "retries":0} for url in query.get('urls')]
 
         # Load known carousels (load into memory to avoid repeated database calls)
-        known_carousels = self.config.get("cache.amazon.carousels", [])
+        known_carousels = self.config.get("cache.amazon.carousels", default=[])
         added_carousels = set() # If we have already added a carousel, do not add it again
 
         # Do not scrape the same page twice
@@ -411,8 +424,10 @@ class AmazonProductSearch(SeleniumSearch):
         page_result["rec_types_displayed"] = ", ".join(recommendations.keys())
         # Add known carousels as columns
         page_result["All Recommendations"] = ""
-        known_carousels = config.get("cache.amazon.carousels", [])
+        # Use the static list of known carousels for columns
+        known_carousels = AmazonProductSearch.known_carousels 
         [page_result.update({column_name: ""}) for column_name in known_carousels]
+        page_result["Additional Recommendations"] = ""
         rec_type = None
 
         # Replace commas in the title; this is annoying but most of our processors simply split on commas instead of taking advantage of JSONs and lists
@@ -450,7 +465,10 @@ class AmazonProductSearch(SeleniumSearch):
             if column_name in known_carousels:
                 # We cannot add all the recommendation groups as columns as they are dynamic and may change by item
                 page_result[column_name] = ", ".join(map(_get_rec_title, rec_group))
-
+            else:
+                # This is an additional recommendation type; add to Additional Recommendations
+                page_result["Additional Recommendations"] += (column_name + ": " + ", ".join(map(_get_rec_title, rec_group)) + "; ")
+               
         # Remove the HTML; maybe should only do for frontend...
         page_result.pop("html")
 
@@ -461,7 +479,7 @@ class AmazonProductSearch(SeleniumSearch):
 
 
     @staticmethod
-    def validate_query(query, request, user):
+    def validate_query(query, request, config):
         """
         Validate input for a dataset query on the Selenium Webpage Scraper.
 

@@ -14,8 +14,6 @@ from common.lib.helpers import UserInput, convert_to_int
 from common.lib.exceptions import ProcessorInterruptedException, ProcessorException
 from extensions.web_studies.selenium_scraper import SeleniumWrapper
 from extensions.web_studies.datasources.url_screenshots.search_webpage_screenshots  import ScreenshotWithSelenium
-from common.config_manager import config
-
 
 
 __author__ = "Dale Wahl"
@@ -35,7 +33,7 @@ class ScreenshotURLs(BasicProcessor):
     extension = "zip"  # extension of result file, used internally and in UI
 
     @classmethod
-    def get_options(cls, parent_dataset=None, user=None):
+    def get_options(cls, parent_dataset=None, config=None):
         """
         Update columns field with actual columns
         """
@@ -108,7 +106,7 @@ class ScreenshotURLs(BasicProcessor):
                     options["columns"]["default"] = [default]
                     break
 
-        if config.get('selenium.firefox_extensions', user=user) and config.get('selenium.firefox_extensions', user=user).get('i_dont_care_about_cookies', {}).get('path'):
+        if config.get('selenium.firefox_extensions') and config.get('selenium.firefox_extensions', default={}).get('i_dont_care_about_cookies', {}).get('path'):
             options['ignore-cookies'] = {
                 "type": UserInput.OPTION_TOGGLE,
                 "help": "Attempt to ignore cookie requests",
@@ -119,7 +117,7 @@ class ScreenshotURLs(BasicProcessor):
         return options
 
     @classmethod
-    def is_compatible_with(cls, module=None, user=None):
+    def is_compatible_with(cls, module=None, config=None):
         """
         Allow processor on datasets
 
@@ -137,7 +135,7 @@ class ScreenshotURLs(BasicProcessor):
             self.dataset.finish(0)
             return
 
-        if not SeleniumWrapper.is_selenium_available():
+        if not SeleniumWrapper.is_selenium_available(config=self.config):
             self.dataset.finish_with_error("Browser is not available; contact 4CAT admin to use processor.")
             return
 

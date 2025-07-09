@@ -25,7 +25,7 @@ fourcat_root = find_fourcat_root()
 if fourcat_root and fourcat_root not in sys.path:
     sys.path.insert(0, fourcat_root)
 try:
-	from common.config_manager import config
+	from common.config_manager import ConfigManager
 except ImportError:
 	print("Error importing common.config_manager; please ensure you are running this script from the 4CAT root directory.")
 	if fourcat_root:
@@ -34,6 +34,7 @@ except ImportError:
 
 
 if __name__ == "__main__":
+	config = ConfigManager()
 	cli = argparse.ArgumentParser()
 	cli.add_argument("--force", "-f", default=False,
 					 help="Force installation of Firefox and Geckodriver even if already installed.",
