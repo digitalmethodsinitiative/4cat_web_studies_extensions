@@ -168,7 +168,7 @@ class AmazonProductSearch(SeleniumSearch):
             if depth == 0:
                 self.dataset.update_status(f"Collecting {url} (URL {urls_collected} of {num_urls} collected)" )
             else:
-                self.dataset.update_status(f"Collecting {url} (Depth {current_depth} of {depth}; URL {urls_collected} of {num_urls} collected)")
+                self.dataset.update_status(f"Collecting {url} (Crawl depth {current_depth} of {depth}; URL {urls_collected} of {num_urls} collected)")
 
             try:
                 asin_id = AmazonProductSearch.extract_asin_from_url(url)
