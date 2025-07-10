@@ -81,20 +81,28 @@ class AmazonProductSearch(SeleniumSearch):
                 "type": UserInput.OPTION_TEXT_LARGE,
                 "help": "List of urls"
             },
+            "crawl": {
+                "type": UserInput.OPTION_TOGGLE,
+                "help": "Crawl Amazon recommended products",
+                "default": False,
+                "tooltip": "If enabled, the scraper will also collect recommended product details from recommended projects."
+            },
             "depth": {
                 "type": UserInput.OPTION_TEXT,
-                "help": "Recommendation depth.",
-                "min": 0,
+                "help": "Recommendation crawl depth",
+                "min": 1,
                 "max": 3,
-                "default": 0,
-                "tooltip": "0 only collects products from provided links; otherwise collect additional products from recommended links selected below."
+                "default": 1,
+                "tooltip": "The scraper will collect recommended products up to this depth. For example, if set to 1, it will collect the provided URLs and the recommended products from the provided URLs. If set to 2, it will collect provided URLs, their recommendations and the recommended products from those recommendations.",
+                "requires": "crawl==true"
             },
             "rec_type": {
                 "type": UserInput.OPTION_MULTI_SELECT,
-                "help": "Recommended products to collect.",
+                "help": "Recommended product categories to collect",
                 "options": {k:k for k in config.get("cache.amazon.carousels", default=[])},
                 "default": [],
-                "tooltip": "Select the types of recommended products to additionally collect. If none are selected, only the provided urls will be collected. If \"All Recommendations\" is selected, all recommended products will be collected regardless of other selections."
+                "tooltip": "Select the types of recommended products to additionally collect. If none are selected, only the provided urls will be collected. If \"All Recommendations\" is selected, all recommended products will be collected regardless of other selections.",
+                "requires": "crawl==true"
             },
         }
         if config.get('selenium.firefox_extensions') and config.get('selenium.firefox_extensions').get('i_dont_care_about_cookies', {}).get('path'):
@@ -124,7 +132,12 @@ class AmazonProductSearch(SeleniumSearch):
         :return:
         """
         self.dataset.log('Query: %s' % str(query))
-        depth = query.get('depth', 0)
+        crawl = query.get('crawl', False)
+        if not crawl:
+            # Is not crawling; only collect the provided URLs
+            depth = 0
+        else:
+            depth = query.get('depth', 0)
         subpage_types = query.get('rec_type', [])
         urls_to_collect = [{"url": AmazonProductSearch.normalize_amazon_links(url), 'current_depth': 0, "retries":0} for url in query.get('urls')]
 
@@ -165,6 +178,7 @@ class AmazonProductSearch(SeleniumSearch):
 
             result = {
                 "id": asin_id if asin_id else url_to_hash(url),
+                "depth": current_depth,
                 "url": url,
                 "final_url": None,
                 "product_id": asin_id,
@@ -229,7 +243,7 @@ class AmazonProductSearch(SeleniumSearch):
                         # Too many consecutive captchas; end collection
                         result['error'] += "CAPTCHA detected\n"
                         yield result
-                        self.dataset.update_status(f"Too many consecutive CAPTCHAs detected; unable to continue", is_final=True)
+                        self.dataset.update_status("Too many consecutive CAPTCHAs detected; unable to continue", is_final=True)
                         break
                 else:
                     consecutive_captchas = 0
@@ -502,6 +516,7 @@ class AmazonProductSearch(SeleniumSearch):
 
         return {
             "urls": preprocessed_urls,
+            "crawl": query.get("crawl", False),
             "depth": query.get("depth", 0),
             "rec_type": query.get("rec_type", [])
             }
