@@ -359,7 +359,7 @@ class GoogleCloudStoreCategories(BasicWorker):
         if not selenium_helper.is_selenium_available(config=self.config):
             raise ProcessorException("Selenium is not available; cannot collect categories from Google Cloud Store")
 
-        selenium_helper.start_selenium()
+        selenium_helper.start_selenium(config=self.config)
         selenium_helper.selenium_log.info(f"Fetching category options from Google Cloud Marketplace {categories_url}")
         selenium_helper.driver.get(categories_url)
         if not selenium_helper.check_for_movement():
