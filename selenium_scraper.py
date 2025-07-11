@@ -281,7 +281,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         """
         self.driver.set_page_load_timeout(timeout)
 
-    def check_for_movement(self):
+    def check_for_movement(self, old_element=None, wait_time=5):
         """
         Some driver.get() commands will not result in an error even if they do not result in updating the page source.
         This can happen, for example, if a url directs the browser to attempt to download a file. It can therefore be
@@ -292,6 +292,16 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         movement occurred. Use in conjunction with self.reset_current_page() if it is necessary to check every url results
         and identify redirects.
         """
+        if old_element:
+            # If an old element is provided, wait for it to become stale
+            try:
+                WebDriverWait(self.driver, wait_time).until(EC.staleness_of(old_element))
+            except (TimeoutException, ElementNotInteractableException, ElementClickInterceptedException) as e:
+                # If the element is not stale, we assume no movement occurred
+                self.selenium_log.warning(f"{e}: Element did not become stale; assuming no movement occurred.")
+                return False
+        
+        # Check if the current URL is different from the last scraped URL
         try:
             current_url = self.driver.current_url
         except UnexpectedAlertPresentException:
