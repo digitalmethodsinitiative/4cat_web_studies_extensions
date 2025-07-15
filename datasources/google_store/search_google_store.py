@@ -22,7 +22,7 @@ class SearchGoogleStore(SearchAppleStore):
     is_static = False  # Whether this datasource is still updated
 
     @classmethod
-    def get_options(cls, parent_dataset=None, user=None):
+    def get_options(cls, parent_dataset=None, config=None):
 
         options = {
             "intro-1": {

@@ -52,7 +52,7 @@ class SearchAppleStore(Search):
         }
 
     @classmethod
-    def get_options(cls, parent_dataset=None, user=None):
+    def get_options(cls, parent_dataset=None, config=None):
 
         options = {
             "intro-1": {
@@ -216,7 +216,7 @@ class SearchAppleStore(Search):
             return []
 
     @staticmethod
-    def validate_query(query, request, user):
+    def validate_query(query, request, config):
         """
         Validate input for a dataset query on the data source.
 

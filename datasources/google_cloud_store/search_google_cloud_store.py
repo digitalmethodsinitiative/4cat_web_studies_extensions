@@ -12,7 +12,6 @@ from backend.lib.worker import BasicWorker
 from common.lib.exceptions import ProcessorInterruptedException, ProcessorException, QueryParametersException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
-from common.config_manager import config
 from common.lib.helpers import url_to_hash
 
 class SearchGoogleCloudStore(SeleniumSearch):
@@ -49,7 +48,7 @@ class SearchGoogleCloudStore(SeleniumSearch):
     }
 
     @classmethod
-    def get_options(cls, parent_dataset=None, user=None):
+    def get_options(cls, parent_dataset=None, config=None):
         max_results = 1000
         options = {
             "intro-1": {
@@ -92,7 +91,7 @@ class SearchGoogleCloudStore(SeleniumSearch):
             #     "tooltip": "If enabled, the full details of each application will be included in the output.",
             # },
         }
-        categories = config.get("cache.google_cloud.categories", {})
+        categories = config.get("cache.google_cloud.categories", default={})
         if categories:
             formatted_categories = {k: categories[k]["name"] for k in sorted(categories)}
             options["categories"]["options"] = formatted_categories
@@ -110,7 +109,7 @@ class SearchGoogleCloudStore(SeleniumSearch):
         :param query:
         :return:
         """
-        if not self.is_selenium_available():
+        if not self.is_selenium_available(config=self.config):
             self.dataset.update_status("Selenium not available; unable to collect from Google Cloud Marketplace.", is_final=True)
             return
 
@@ -141,7 +140,7 @@ class SearchGoogleCloudStore(SeleniumSearch):
 
             collected = 0
             if method == "categories":
-                known_categories = self.config.get("cache.google_cloud.categories", {})
+                known_categories = self.config.get("cache.google_cloud.categories", default={})
                 current_category = known_categories.get(query, {})
                 query = current_category.get("name")
                 url = current_category.get("link")
@@ -279,7 +278,7 @@ class SearchGoogleCloudStore(SeleniumSearch):
 
 
     @staticmethod
-    def validate_query(query, request, user):
+    def validate_query(query, request, config):
         """
         Validate input for a dataset query on the data source.
 
@@ -337,11 +336,17 @@ class GoogleCloudStoreCategories(BasicWorker):
     """
     type = "google-cloud-store-category-collector"  # job ID
 
-    # Run every day to update categories
-    if "google-cloud-store" in config.get("datasources.enabled"):
-        ensure_job = {"remote_id": "google-cloud-store-category-collector", "interval": 86400}
-
     cat_filter_xpath = "//cfc-unfold[.//span[contains(text(), 'Category')]]"
+
+    @classmethod
+    def ensure_job(cls, config=None):
+        """
+        Ensure job is scheduled to run every day
+        """
+        # Run every day to update categories
+        if "google-cloud-store" in config.get("datasources.enabled"):
+            return {"remote_id": "google-cloud-store-category-collector", "interval": 86400}
+        return None
 
     def work(self):
         """
@@ -351,13 +356,11 @@ class GoogleCloudStoreCategories(BasicWorker):
         params = {"hl": "en"}
         categories_url = SearchGoogleCloudStore.base_url + ("?" + urllib.parse.urlencode(params)) if params else ""
         selenium_helper = SeleniumWrapper()
-        if not selenium_helper.is_selenium_available():
+        if not selenium_helper.is_selenium_available(config=self.config):
             raise ProcessorException("Selenium is not available; cannot collect categories from Google Cloud Store")
 
-        # Backend runs get_options for each processor on init; but does not seem to have logging
+        selenium_helper.start_selenium(config=self.config)
         selenium_helper.selenium_log.info(f"Fetching category options from Google Cloud Marketplace {categories_url}")
-
-        selenium_helper.start_selenium()
         selenium_helper.driver.get(categories_url)
         if not selenium_helper.check_for_movement():
             raise ProcessorException("Failed to load Google Cloud Marketplace")
@@ -371,8 +374,8 @@ class GoogleCloudStoreCategories(BasicWorker):
             category_filters = self.get_category_filters(selenium_helper.driver)
             if category_filters:
                 self.log.info(f"Collected category options ({len(category_filters)}) from Google Cloud Marketplace")
-                config.set("cache.google_cloud.categories", category_filters)
-                config.set("cache.google_cloud.categories_updated_at", datetime.now().timestamp())
+                self.config.set("cache.google_cloud.categories", category_filters)
+                self.config.set("cache.google_cloud.categories_updated_at", datetime.now().timestamp())
             else:
                 self.log.warning("Failed to collect category options from Google Cloud Marketplace")
 
