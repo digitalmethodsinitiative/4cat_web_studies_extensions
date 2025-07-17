@@ -203,7 +203,7 @@ class ScreenshotURLs(BasicProcessor):
         self.dataset.update_status("Starting Selenium Webdriver.")
         webdriver = SeleniumWrapper()
         try:
-            webdriver.start_selenium()
+            webdriver.start_selenium(config=self.config)
             if ignore_cookies:
                 webdriver.enable_firefox_extension(
                     self.config.get('selenium.firefox_extensions').get('i_dont_care_about_cookies', {}).get('path'))
