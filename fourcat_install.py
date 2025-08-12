@@ -12,7 +12,7 @@ def find_fourcat_root():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     
     while current_dir != os.path.dirname(current_dir):  # Stop at filesystem root
-        if os.path.basename(current_dir) == 'extensions':
+        if os.path.basename(current_dir) == 'config':
             # Found extensions folder, go one level up for 4CAT root
             return os.path.dirname(current_dir)
         current_dir = os.path.dirname(current_dir)
