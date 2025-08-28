@@ -28,6 +28,7 @@ class ScreenshotWithSelenium(SeleniumSearch):
     title = "Screenshot Generator"  # title displayed in UI
     description = "Take screenshots of webpages"  # description displayed in UI
     extension = "zip"
+    media_type = "image"
 
     eager_selenium = True
 
@@ -132,9 +133,6 @@ class ScreenshotWithSelenium(SeleniumSearch):
         scraped_urls = set()
         total_urls = len(urls_to_scrape)
         metadata = {}
-
-        # Set timeout for driver.get(); Web archives in particular can take a while to load
-        self.set_page_load_timeout(30)
 
         count = 0
         while urls_to_scrape:

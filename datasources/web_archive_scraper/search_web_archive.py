@@ -6,10 +6,13 @@ Currently designed around Firefox, but can also work with Chrome; results may va
 from urllib.parse import urlparse
 import datetime
 import requests
-import random
 import time
 from ural import is_url
 from dateutil.relativedelta import relativedelta
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 from extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException, ProcessorException
@@ -28,8 +31,14 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
     description = "Scrape HTML source code from the Web Archive (web.archive.org) using Selenium and Firefox"
     extension = "ndjson"
 
+    web_archive_url = 'https://web.archive.org/web/'
+
     # Web Archive returns "internal error" sometimes even when snapshot exists; we retry
-    bad_response_text = ['This snapshot cannot be displayed due to an internal error', 'The Wayback Machine requires your browser to support JavaScript']
+    bad_response_text = [
+        'This snapshot cannot be displayed due to an internal error', 
+        'The Wayback Machine requires your browser to support JavaScript',
+        'Application error: a client-side exception has occurred (see the browser console for more information)'
+        ]
     # Web Archive will load and then redirect after a few seconds; check for new page to load
     redirect_text = ['Got an HTTP 302 response at crawl time', 'Got an HTTP 301 response at crawl time']
 
@@ -71,14 +80,6 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
         }
 
         if config.get("selenium.display_advanced_options", default=False):
-            options["subpages"] = {
-                "type": UserInput.OPTION_TEXT,
-                "help": "Crawl additional links/subpages",
-                "min": 0,
-                "max": 5,
-                "default": 0,
-                "tooltip": "If enabled, the scraper will also crawl and collect random links found on the provided page."
-            }
             options["http_request"] = {
                 "type": UserInput.OPTION_CHOICE,
                 "help": "HTTP or Selenium request",
@@ -92,6 +93,342 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
 
         return options
 
+    @staticmethod
+    def request_available_archive_urls(url, min_date=None, max_date=None, limit=None):
+        """
+        Get available Archive.org snapshots within a timeframe for given URL.
+
+        API docs:
+        https://github.com/internetarchive/wayback/tree/master/wayback-cdx-server#basic-usage
+
+        :param url: The URL to check for archived snapshots.
+        :param min_date: The minimum date for the snapshot search.
+        :param max_date: The maximum date for the snapshot search.
+        :param frequency: The frequency of snapshots to retrieve.
+        :param limit: The maximum number of snapshots to retrieve. (positive integer start from beginning, negative from end)
+        """
+        if min_date is None and limit is None:
+            # Technically not true but results can be massive
+            raise ProcessorException("Either min_date or limit must be provided to search for archived URLs.")
+        if url.startswith("http"):
+            # API does not accept http(s):// URLs
+            url = "://".join(url.split("://")[1:])
+        url_params = {
+            "url": url,
+            "output": "json",
+            "filter": "statuscode:200",
+        }
+        if min_date is not None:
+            url_params["from"] = datetime.datetime.fromtimestamp(int(min_date)).strftime('%Y%m%d%H%M%S')
+        if max_date is not None:
+            url_params["to"] = datetime.datetime.fromtimestamp(int(max_date)).strftime('%Y%m%d%H%M%S')
+        if limit is not None:
+            url_params["limit"] = limit
+            if limit < 0:
+                url_params["fastLatest"] = "true"
+
+        response = requests.get("http://web.archive.org/cdx/search/cdx", params=url_params, timeout=60)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise ProcessorException(f"Error {response.status_code} from Archive.org CDX server")
+        
+    @staticmethod
+    def create_web_archive_url(date, url):
+        """
+        Create a Web Archive URL for a specific date and original URL.
+
+        :param date: The date of the archived snapshot.
+        :param url: The original URL to be archived.
+        :return: The Web Archive URL.
+        """
+        date_str = date.strftime('%Y%m%d%H%M%S')
+        return f"http://web.archive.org/web/{date_str}/{url}"
+    
+    @staticmethod
+    def check_web_archive_page_loaded(driver):
+        """
+        Check if the Web Archive page has fully loaded.
+        """
+        try:
+            # Wait for DOM ready and presence of <body>
+            WebDriverWait(driver, 30).until(
+                lambda d: d.execute_script('return document.readyState') == 'complete'
+            )
+            WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
+            # Try to wait for meaningful content: main/article/role=main or hydrated #__next children
+            content_ready = False
+            try:
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "main, article, [role='main'], #__next > *"))
+                )
+                content_ready = True
+            except TimeoutException:
+                content_ready = False
+            if not content_ready:
+                return False
+        except TimeoutException:
+            return False
+
+        # Quick sanity checks against known IA error pages
+        page_source = driver.page_source or ""
+        if any(bad in page_source for bad in SearchWebArchiveWithSelenium.bad_response_text):
+            return False
+
+        return True
+
+    @staticmethod
+    def extract_web_archive_content(driver):
+        """
+        Extract the main content from a Web Archive page.
+        """
+        # Wait for the body to appear (defensive)
+        try:
+            WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
+        except TimeoutException:
+            # Proceed anyway; we'll get whatever is available
+            pass
+
+        final_url = driver.current_url
+        page_title = driver.title
+        page_source = driver.page_source or ""
+
+        # Visible text via BeautifulSoup helper in Selenium stack
+        body_text_list = []
+        try:
+            body_text_list = SeleniumSearch.scrape_beautiful_text(page_source)
+        except Exception:
+            body_text_list = []
+
+        # Links via BeautifulSoup for stable absolute URLs
+        try:
+            parsed = urlparse(final_url)
+            domain = f"{parsed.scheme}://{parsed.netloc}"
+            _, bs_links = SeleniumSearch.get_beautiful_links(page_source, domain)
+        except Exception:
+            bs_links = []
+
+        # Also collect raw hrefs via Selenium (can include archive prefixes)
+        try:
+            hrefs = [el.get_attribute('href') for el in driver.find_elements(By.XPATH, "//a[@href]")]
+        except Exception:
+            hrefs = []
+
+        return {
+            'final_url': final_url,
+            'page_title': page_title,
+            'page_source': page_source,
+            'text': body_text_list,
+            'links': hrefs,
+            'scraped_links': bs_links,
+        }
+
+    @staticmethod
+    def build_segments(start_ts, end_ts, freq):
+        """
+        Build time segments based on the specified frequency.
+        """
+        start_dt = datetime.datetime.fromtimestamp(int(start_ts)) if start_ts is not None else None
+        end_dt = datetime.datetime.fromtimestamp(int(end_ts)) if end_ts is not None else None
+        if start_dt is None and end_dt is None:
+            return []
+        if start_dt is None:
+            # default to 1 year before end if only end provided
+            start_dt = end_dt - relativedelta(years=1)
+        if end_dt is None:
+            end_dt = datetime.datetime.now()
+
+        segments = []
+        cur = start_dt
+        if freq == 'first':
+            segments.append((start_dt, end_dt))
+        elif freq == 'yearly':
+            while cur <= end_dt:
+                seg_start = datetime.datetime(cur.year, 1, 1)
+                seg_end = datetime.datetime(cur.year, 12, 31, 23, 59, 59)
+                # clamp to bounds
+                if seg_end < start_dt:
+                    cur = seg_end + datetime.timedelta(seconds=1)
+                    continue
+                segments.append((max(seg_start, start_dt), min(seg_end, end_dt)))
+                cur = seg_end + datetime.timedelta(seconds=1)
+        elif freq == 'monthly':
+            while cur <= end_dt:
+                seg_start = datetime.datetime(cur.year, cur.month, 1)
+                seg_end = seg_start + relativedelta(months=1) - datetime.timedelta(seconds=1)
+                segments.append((max(seg_start, start_dt), min(seg_end, end_dt)))
+                cur = seg_end + datetime.timedelta(seconds=1)
+        elif freq == 'weekly':
+            # Use 7-day windows from start_dt
+            cur = start_dt
+            while cur <= end_dt:
+                seg_start = cur
+                seg_end = cur + datetime.timedelta(days=7) - datetime.timedelta(seconds=1)
+                segments.append((max(seg_start, start_dt), min(seg_end, end_dt)))
+                cur = seg_end + datetime.timedelta(seconds=1)
+        elif freq == 'daily':
+            cur = start_dt
+            while cur <= end_dt:
+                seg_start = datetime.datetime(cur.year, cur.month, cur.day)
+                seg_end = seg_start + datetime.timedelta(days=1) - datetime.timedelta(seconds=1)
+                segments.append((max(seg_start, start_dt), min(seg_end, end_dt)))
+                cur = seg_end + datetime.timedelta(seconds=1)
+        else:
+            raise ProcessorException(f"Frequency {freq} not implemented!")
+
+        return segments
+
+    def iter_snapshots(self, query):
+        """
+        Central iterator that yields one event per segment:
+        - On success: {'ok': True, 'url', 'seg_start', 'dt', 'snapshot_url'} after a snapshot has been loaded.
+        - On failure: {'ok': False, 'url', 'seg_start', 'fail_url', 'error'} when no snapshot succeeded in a segment.
+
+    This method also updates dataset progress/status per segment to avoid duplication in subclasses.
+    """
+        min_date = query.get('min_date')
+        max_date = query.get('max_date')
+        frequency = query.get('frequency')
+
+        # Precompute total segments for progress
+        total_segments = 0
+        url_to_segments = {}
+        for url in query.get('validated_urls'):
+            url_to_segments[url] = self.build_segments(min_date, max_date, frequency)
+            total_segments += len(url_to_segments[url])
+
+        completed_segments = 0
+
+        for url in query.get('validated_urls'):
+            # If user supplied a specific Web Archive URL, just attempt to load it directly once
+            if self.web_archive_url == url[:len(self.web_archive_url)]:
+                segments = [(datetime.datetime.fromtimestamp(min_date) if min_date else None,
+                             datetime.datetime.fromtimestamp(max_date) if max_date else None)]
+                captures = [[None, url.split('/web/')[1].split('/')[0], url]]  # mimic CDX row
+            else:
+                # Fetch available captures for this URL
+                limit = None if min_date is not None else -5
+                try:
+                    captures_json = self.request_available_archive_urls(url, min_date=min_date, max_date=max_date, limit=limit)
+                except Exception as e:
+                    self.dataset.log(f"Unable to reach Web Archive API: {url} - {str(e)}")
+                    continue
+
+                if not captures_json or len(captures_json) <= 1:
+                    self.dataset.log(f"No archived snapshots found for {url} in given range")
+                    continue
+
+                # Normalize and sort captures by timestamp asc
+                _, rows = captures_json[0], captures_json[1:]
+                try:
+                    rows.sort(key=lambda r: r[1])
+                except Exception:
+                    pass
+                captures = rows
+                segments = url_to_segments[url]
+
+            # Iterate segments and try captures inside each
+            for seg_start, seg_end in segments:
+                if self.interrupted:
+                    raise ProcessorInterruptedException("Interrupted while scraping urls from the Web Archive")
+
+                # Filter captures within segment window
+                seg_caps = []
+                for r in captures:
+                    ts = r[1]
+                    try:
+                        dt = datetime.datetime.strptime(ts, '%Y%m%d%H%M%S')
+                    except Exception:
+                        continue
+                    if (seg_start is None or dt >= seg_start) and (seg_end is None or dt <= seg_end):
+                        seg_caps.append((dt, r))
+
+                # For 'first', reduce to the earliest capture after start
+                if frequency == 'first':
+                    seg_caps = seg_caps[:1] if seg_caps else []
+
+                # Attempt each capture in this segment until one loads properly
+                segment_success = False
+                segment_error = ''
+
+                for dt, r in seg_caps:
+                    ts = r[1]
+                    original_url = r[2] if len(r) > 2 else url
+                    snapshot_url = f"http://web.archive.org/web/{ts}/{original_url}"
+
+                    # Try to navigate
+                    success, errors = self.get_with_error_handling(snapshot_url, max_attempts=2, wait=2, restart_browser=True)
+                    if not success:
+                        segment_error += ('\n'.join([str(e) for e in errors]) + '\n') if errors else ''
+                        continue
+                    
+                    # Scroll to bottom of page to load
+                    self.scroll_down_page_to_load(max_time=30)
+
+                    # Wait for load and handle possible redirect within archive playback
+                    if not self.check_page_is_loaded(max_time=60):
+                        segment_error += f"Timeout loading {snapshot_url}\n"
+                        continue
+
+                    # If Wayback reports redirect, wait briefly for movement
+                    try:
+                        page_text = SeleniumSearch.scrape_beautiful_text(self.driver.page_source)
+                    except Exception:
+                        page_text = []
+                    if any(any(rt in t for rt in self.redirect_text) for t in page_text):
+                        # give it a short window to redirect
+                        last_url = self.driver.current_url
+                        end_wait = time.time() + 10
+                        moved = False
+                        while time.time() < end_wait:
+                            time.sleep(1)
+                            if self.driver.current_url != last_url:
+                                moved = True
+                                break
+                        if moved:
+                            # Re-check load
+                            self.scroll_down_page_to_load(max_time=30)
+                            if not self.check_page_is_loaded(max_time=30):
+                                segment_error += f"Redirected but final page did not load for {snapshot_url}\n"
+                                continue
+
+                    # Final validation against IA internal error pages
+                    if not self.check_web_archive_page_loaded(self.driver):
+                        segment_error += f"Archive page not properly loaded for {snapshot_url}\n"
+                        continue
+
+                    # Success for this segment
+                    segment_success = True
+                    # Progress update here to centralize
+                    completed_segments += 1
+                    if total_segments:
+                        self.dataset.update_progress(completed_segments / total_segments)
+                    self.dataset.update_status(f"Captured {completed_segments} of {total_segments} possible segments")
+                    yield {
+                        'ok': True,
+                        'url': url,
+                        'seg_start': seg_start,
+                        'dt': dt,
+                        'snapshot_url': snapshot_url,
+                    }
+                    break
+
+                if not segment_success:
+                    # Progress update for failed segment
+                    completed_segments += 1
+                    if total_segments:
+                        self.dataset.update_progress(completed_segments / total_segments)
+                    self.dataset.update_status(f"Captured {completed_segments} of {total_segments} possible segments")
+
+                    fail_url = f"{self.web_archive_url}{seg_start.strftime('%Y%m%d%H%M%S') if seg_start else ''}/{url}"
+                    yield {
+                        'ok': False,
+                        'url': url,
+                        'seg_start': seg_start,
+                        'fail_url': fail_url,
+                        'error': segment_error if segment_error else 'No successful snapshot in segment',
+                    }
+
     def get_items(self, query):
         """
         Separate and check urls, then loop through each and collects the HTML.
@@ -99,201 +436,72 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
         :param query:
         :return:
         """
-
         http_request = self.parameters.get("http_request", "selenium_only") == 'both'
         if http_request:
             self.dataset.update_status('Scraping Web Archives with Selenium %s and HTTP Requests' % self.browser)
         else:
             self.dataset.update_status('Scraping Web Archives with Selenium %s' % self.browser)
-        scrape_additional_subpages = self.parameters.get("subpages", 0)
 
-        preprocessed_urls = []
-        for url in query.get('validated_urls'):
-            url_group = SearchWebArchiveWithSelenium.create_web_archive_urls(url, query["min_date"], query["max_date"],
-                                                                             query.get('frequency'))
-            [preprocessed_urls.append(new_url) for new_url in url_group]
-        urls_to_scrape = [{'url':url['url'], 'base_url':url['base_url'], 'year':url['year'], 'num_additional_subpages': scrape_additional_subpages, 'subpage_links':[]} for url in preprocessed_urls]
+        for event in self.iter_snapshots(query):
+            if event.get('ok'):
+                # Extract content and yield an item (HTML scraper behavior)
+                content = self.extract_web_archive_content(self.driver)
+                dt = event['dt']
+                seg_start = event['seg_start']
+                snapshot_url = event['snapshot_url']
+                base_url = event['url']
 
-        # Do not scrape the same site twice
-        scraped_urls = set()
-        num_urls = len(urls_to_scrape)
-        if scrape_additional_subpages:
-            num_urls = num_urls * (scrape_additional_subpages + 1)
+                result = {
+                    "id": url_to_hash(snapshot_url),
+                    "base_url": base_url,
+                    "year": (seg_start.year if seg_start else dt.year),
+                    "date": dt.strftime('%Y-%m-%d %H:%M:%S') if dt else None,
+                    "url": snapshot_url,
+                    "final_url": content.get('final_url'),
+                    "subject": content.get('page_title'),
+                    "body": content.get('text'),
+                    "html": content.get('page_source'),
+                    "http_html": None,
+                    "detected_404": self.check_for_404(),
+                    "timestamp": int(datetime.datetime.now().timestamp()),
+                    "error": '',
+                    "selenium_links": content.get('links'),
+                }
 
-        done = 0
-        count = 0
-        while urls_to_scrape:
-            count += 1
-            if self.interrupted:
-                raise ProcessorInterruptedException("Interrupted while scraping urls from the Web Archive")
+                # Collect links from page source for export
+                result['scraped_links'] = content.get('scraped_links')
 
-            self.dataset.update_progress(done / num_urls)
-            self.dataset.update_status("Captured %i of %i possible URLs" % (done, num_urls))
-
-            # Grab first url
-            url_obj = urls_to_scrape.pop(0)
-            url = url_obj['url']
-            num_additional_subpages = url_obj['num_additional_subpages']
-            result = {
-                "id": url_to_hash(url),
-                "base_url": url_obj['base_url'],
-                "year": url_obj['year'],
-                "url": url,
-                "final_url": None,
-                "subject": None,
-                "body": None,
-                "html": None,
-                "http_html": None,
-                "detected_404": None,
-                "timestamp": None,
-                "error": '',
-            }
-
-            attempts = 0
-            success = False
-            scraped_page = None
-            while attempts < 2:
-                attempts += 1
-                try:
-                    scraped_page = self.simple_scrape_page(url, extract_links=True)
-                except Exception as e:
-                    self.dataset.log('Url %s unable to be scraped with error: %s' % (url, str(e)))
-                    self.restart_selenium()
-                    result['error'] += 'SCAPE ERROR:\n' + str(e) + '\n'
-                    continue
-
-                if scraped_page:
-                    scraped_page['text'] = self.scrape_beautiful_text(scraped_page['page_source'])
-                else:
-                    # Hard Fail?
-                    self.dataset.log('Hard fail; no page source on url: %s' % url)
-                    result['error'] += 'SCAPE ERROR:\n No page source on url; retrying\n'
-                    continue
-
-                # Redirects require waiting on Internet Archive
-                if any([any([redirect_text in text for redirect_text in self.redirect_text]) for text in scraped_page['text']]):
-                    # Update last_scraped_url for movement check
-                    self.last_scraped_url = self.driver.current_url
-                    self.dataset.log('Redirect url: %s' % url)
-                    time.sleep(3)
-                    time_to_wait = 5
+                # Optional HTTP request of final_url
+                if http_request and result.get('final_url'):
                     try:
-                        while time_to_wait > 0:
-                            if self.check_for_movement():
-                                time.sleep(5)
-                                scraped_page = self.collect_results(url)
-                                if scraped_page:
-                                    scraped_page['text'] = self.scrape_beautiful_text(scraped_page['page_source'])
-                                    break
-                                else:
-                                    raise Exception('No page source on url: %s' % url)
-                            else:
-                                time_to_wait -= 1
-                                time.sleep(1)
-                    except Exception as e:
-                        # most likely something in Selenium "went stale"
-                        self.dataset.log('Redirect url unable to be scraped: %s' % url)
-                        redirect_error = 'REDIRECT ERROR:\n%s\n' % str(e)
-                        self.dataset.log(redirect_error)
-                        result['error'] += redirect_error
-                        break
-
-                if any([any([bad_response in text for bad_response in self.bad_response_text]) for text in scraped_page['text']]):
-                    # Bad response from Internet Archive
-                    bad_internet_archive_request = 'Web Archive bad request detected on url: %s\nTrying again...' % url
-                    self.dataset.log(bad_internet_archive_request)
-                    result['error'] += bad_internet_archive_request
-                    # Try again; Internet Achive is mean
-                    time.sleep(1)
-                    continue
-                elif scraped_page['detected_404']:
-                    four_oh_four_error = '404 detected on url: %s\n' % url
-                    self.dataset.log(four_oh_four_error)
-                    result['error'] += four_oh_four_error
-                    break
-                else:
-                    success = True
-                    scraped_urls.add(url)
-                    break
-
-            if success:
-                self.dataset.log('Collected: %s' % url)
-                done += 1
-                result['final_url'] = scraped_page.get('final_url')
-                result['body'] = scraped_page.get('text')
-                result['subject'] = scraped_page.get('page_title')
-                result['html'] = scraped_page.get('page_source')
-                result['detected_404'] = scraped_page.get('detected_404')
-                result['timestamp'] = int(datetime.datetime.now().timestamp())
-                result['error'] += scraped_page.get('error', '') if scraped_page.get('error') else ''
-                result['selenium_links'] = scraped_page.get('links') if scraped_page.get('links') else scraped_page.get('collect_links_error')
-
-                # Collect links from page source
-                domain = urlparse(url).scheme + '://' + urlparse(url).netloc
-                num_of_links, links = self.get_beautiful_links(scraped_page['page_source'], domain)
-                result['scraped_links'] = links
-
-                # Check is additional subpages need to be scraped
-                if num_additional_subpages > 0:
-                    # Check if any are available
-                    if not url_obj['subpage_links']:
-                        # If no, collect links
-                        # Randomize links (else we end up with mostly menu items at the top of webpages)
-                        random.shuffle(links)
-                    else:
-                        links = url_obj['subpage_links']
-
-                    # Find the first link that has not been previously scraped
-                    while links:
-                        link = links.pop(0)
-                        if self.check_exclude_link(link.get('url'), scraped_urls, base_url='.'.join(urlparse(url_obj['base_url']).netloc.split('.')[1:]), bad_url_list=self.urls_to_exclude):
-                            # Add it to be scraped next
-                            urls_to_scrape.insert(0, {
-                                'url': link.get('url'),
-                                'base_url': url_obj['base_url'],
-                                'year': url_obj['year'],
-                                'num_additional_subpages': num_additional_subpages - 1, # Make sure to request less additional pages
-                                'subpage_links':links,
-                            })
-                            break
-
-                if http_request:
-                    try:
-                        http_response = self.request_get_w_error_handling(scraped_page.get('final_url'), timeout=120)
-                        self.dataset.log('Collected HTTP response: %s' % scraped_page.get('final_url'))
+                        http_response = self.request_get_w_error_handling(result.get('final_url'), timeout=120)
+                        self.dataset.log(f"Collected HTTP response: {result.get('final_url')}")
                         result['http_html'] = http_response.text
                     except Exception as e:
                         result['http_html'] = None
-                        http_error = '\nHTTP ERROR:\n' + str(e)
-                        result['error'] = 'SELENIUM ERROR:\n' + str(result['error']) + http_error
+                        result['error'] += ('\nHTTP ERROR:\n' + str(e))
 
                 yield result
             else:
-                # Still need subpages?
-                if num_additional_subpages > 0:
-                    # Add the next one if it exists
-                    links = url_obj['subpage_links']
-                    while links:
-                        link = links.pop(0)
-                        if self.check_exclude_link(link.get('url'), scraped_urls, base_url='.'.join(urlparse(url_obj['base_url']).netloc.split('.')[1:]), bad_url_list=self.urls_to_exclude):
-                            # Add it to be scraped next
-                            urls_to_scrape.insert(0, {
-                                'url': link.get('url'),
-                                'base_url': url_obj['base_url'],
-                                'year': url_obj['year'],
-                                'num_additional_subpages': num_additional_subpages - 1, # Make sure to request less additional pages
-                                'subpage_links':links,
-                            })
-                            break
-                # Unsure if we should return ALL failures, but certainly the originally supplied urls
-                result['timestamp'] = int(datetime.datetime.now().timestamp())
-                if scraped_page:
-                    result['error'] += scraped_page.get('error', '') if scraped_page.get('error') else ''
-                else:
-                    # missing error...
-                    result['error'] += 'Unable to scrape'
-
-                yield result
+                seg_start = event['seg_start']
+                fail_url = event['fail_url']
+                yield {
+                    "id": url_to_hash(fail_url),
+                    "base_url": event['url'],
+                    "year": seg_start.year if seg_start else None,
+                    "date": seg_start.strftime('%Y-%m-%d %H:%M:%S') if seg_start else None,
+                    "url": fail_url,
+                    "final_url": None,
+                    "subject": None,
+                    "body": None,
+                    "html": None,
+                    "http_html": None,
+                    "detected_404": None,
+                    "timestamp": int(datetime.datetime.now().timestamp()),
+                    "error": event.get('error', ''),
+                    "selenium_links": [],
+                    "scraped_links": [],
+                }
 
 
     def request_get_w_error_handling(self, url, retries=3, **kwargs):
@@ -334,10 +542,10 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
         """
         # Convert list of text strings to one string
         page_result['body'] = '\n'.join(page_result.get('body')) if page_result.get('body') else ''
-        # Convert list of link objects to comma seperated urls
+        # Convert list of link objects to comma separated urls
         page_result['scraped_links'] = ','.join([link.get('url') for link in page_result.get('scraped_links')]) if page_result.get('scraped_links') else ''
-        # Convert list of links to comma seperated urls
-        page_result['selenium_links'] = ','.join(map(str,page_result.get('selenium_links'))) if type(page_result.get('selenium_links')) == list else page_result.get('selenium_links', '')
+        # Convert list of links to comma separated urls
+        page_result['selenium_links'] = ','.join(map(str, page_result.get('selenium_links'))) if isinstance(page_result.get('selenium_links'), list) else page_result.get('selenium_links', '')
 
         return MappedItem(page_result)
 
@@ -435,6 +643,6 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
             "max_date": query.get("max_date"),
             "frequency": query.get("frequency"),
             "validated_urls": validated_urls,
-            "subpages": query.get("subpages", 0),
-            'http_request': query.get("http_request", "selenium_only"),
+            "http_request": query.get("http_request", "selenium_only"),
+            "pause-time": query.get("pause-time", 6)
             }
