@@ -1,3 +1,4 @@
+import random
 import subprocess
 import time
 import shutil
@@ -15,6 +16,7 @@ from common.lib.user_input import UserInput
 
 from selenium import webdriver
 from selenium.webdriver.firefox.service import Service as FirefoxService
+from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -67,9 +69,24 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         formatter = CustomFormatter('%(asctime)s - %(name)s - %(levelname)s - %(location)s - %(message)s')
         self.selenium_log = logging.getLogger('selenium')
         self.selenium_log.setLevel(logging.INFO)
-        file_handler = logging.FileHandler(self.config.get("PATH_LOGS").joinpath('selenium.log'))
-        file_handler.setFormatter(formatter)
-        self.selenium_log.addHandler(file_handler)
+        # ensure we only add a file handler once (avoid duplicate log entries)
+        log_path = str(self.config.get("PATH_LOGS").joinpath('selenium.log'))
+        existing = False
+        for h in list(self.selenium_log.handlers):
+            try:
+                if isinstance(h, logging.FileHandler) and os.path.abspath(getattr(h, 'baseFilename', '')) == os.path.abspath(log_path):
+                    # update formatter in case it's changed and mark as present
+                    h.setFormatter(formatter)
+                    existing = True
+                    break
+            except Exception:
+                continue
+        if not existing:
+            file_handler = logging.FileHandler(log_path)
+            file_handler.setFormatter(formatter)
+            self.selenium_log.addHandler(file_handler)
+        # Avoid propagating to ancestor loggers (prevents duplicate writes if root logger also has handlers)
+        self.selenium_log.propagate = False
 
         self._setup_done = True
 
@@ -207,9 +224,9 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         else:
             return False
 
-    def start_selenium(self, eager=None, config=None):
+    def start_selenium(self, browser=None, eager=None, proxy=None, config=None):
         """
-        Start a headless browser
+        Start a browser with Selenium
 
         :param bool eager:  Eager loading? If None, uses class attribute self.eager_selenium (default False)
         """
@@ -226,90 +243,311 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
                 self.setup(self.config)
             else:
                 raise ProcessorException("SeleniumWrapper not setup; please call setup() with a config object before starting Selenium.")
+        
+        self.proxy = proxy
 
         if eager is not None:
             # Update eager loading
             self.eager_selenium = eager
 
-        self.browser = self.config.get('selenium.browser')
+        if browser is not None:
+            # Update browser type
+            self.browser = browser
+        elif self.browser is None:
+            # Use configured default browser
+            self.browser = self.config.get('selenium.browser')
         self.selenium_log.info(f"Starting Selenium with browser: {self.browser}")
         
-        # Selenium options
-        # TODO review and compare Chrome vs Firefox options
-        if self.browser == 'chrome':
-            from selenium.webdriver.chrome.options import Options
-        elif self.browser == 'firefox':
-            from selenium.webdriver.firefox.options import Options
+        if self.browser != "firefox":
+            raise NotImplementedError("Currently only Firefox is supported")
         else:
-            raise ImportError('selenium.browser only works with "chrome" or "firefox"')
-        
-        options_start = time.time()
-        options = Options()
-        options.headless = True
-        
-        if self.browser == 'firefox':
-            # Firefox-specific optimizations - no profile creation for speed
-            options.add_argument('--headless')
-            options.add_argument('--no-sandbox')
-            options.add_argument("--disable-gpu")
-            options.add_argument("--disable-extensions")
-            options.add_argument("--private")
-            
-            # Set preferences directly in options to avoid profile creation
-            options.set_preference("dom.webdriver.enabled", False)
-            options.set_preference('useAutomationExtension', False)
-            options.set_preference("browser.privatebrowsing.autostart", True)
-            options.set_preference("browser.cache.disk.enable", False)
-            options.set_preference("browser.cache.memory.enable", False)
-            options.set_preference("permissions.default.image", 2)  # Block images for speed
-        else:
-            # Chrome-specific options
-            options.add_argument('--headless')
-            options.add_argument('--no-sandbox')
-            options.add_argument("--disable-gpu")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-browser-side-navigation")
+            self.setup_firefox()
+        self.last_scraped_url = None
 
+    def setup_firefox(self):
+        """
+        Setup Firefox-specific options for Selenium.
+        """
+        driver_start = time.time()
+        options = FirefoxOptions()
+
+        # Configure virtual display vs headless mode
+        self.setup_virtual_display_mode(options, "firefox")
+       
+        # Firefox-specific optimizations - no profile creation for speed
+        options.add_argument('--no-sandbox')
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--private")
+        
+        # Set preferences directly in options to avoid profile creation
+        options.set_preference("dom.webdriver.enabled", False)
+        options.set_preference('useAutomationExtension', False)
+        options.set_preference("browser.privatebrowsing.autostart", True)
+        options.set_preference("browser.cache.disk.enable", False)
+        options.set_preference("browser.cache.memory.enable", False)
+
+        # TODO: setting to block images; REMOVE for screenshot capture
+        # options.set_preference("permissions.default.image", 2)  # Block images for speed
+
+        # Eager loading
         if self.eager_selenium:
             options.set_capability("pageLoadStrategy", "eager")
-            
-        options_time = time.time() - options_start
-        self.selenium_log.info(f"Options setup took: {options_time:.2f}s")
-
-        driver_start = time.time()
-        try:
-            if self.browser == 'chrome':
-                self.driver = webdriver.Chrome(executable_path=self.config.get('selenium.selenium_executable_path'), options=options)
-            elif self.browser == 'firefox':
-                # Create Firefox service
-                service = FirefoxService(executable_path=self.config.get('selenium.selenium_executable_path'))
-                
-                # Create Firefox driver with modern API (no profile needed)
-                self.driver = webdriver.Firefox(service=service, options=options)
-                self.driver.maximize_window() # most users browse maximized
-            else:
-                if hasattr(self, 'dataset'):
-                    self.dataset.update_status("Selenium Scraper not configured")
-                raise ProcessorException("Selenium Scraper not configured; browser must be 'firefox' or 'chrome'")
-        except (SessionNotCreatedException, WebDriverException) as e:
-            if hasattr(self, 'dataset'):
-                self.dataset.update_status("Selenium Scraper not configured; contact admin.", is_final=True)
-                self.dataset.finish(0)
-            if "only supports Chrome" in str(e):
-                raise ProcessorException("Your chromedriver version is incompatible with your Chromium version:\n  (%s)" % e)
-            elif "Message: '' executable may have wrong" in str(e):
-                raise ProcessorException('Webdriver not installed or path to executable incorrect (%s)' % str(e))
-            else:
-                raise ProcessorException("Could not connect to browser (%s)." % str(e))
-                
-        driver_time = time.time() - driver_start
-        self.selenium_log.info(f"Driver creation took: {driver_time:.2f}s")
         
-        # Test adding a script to remove webdriver detection
+        # Set custom user agent
+        user_agent = self.get_user_agent()
+        options.set_preference("general.useragent.override", user_agent)
+
+        # Configure proxy if provided
+        if self.proxy is not None:
+            # Parse proxy string (expected format: "protocol://host:port" or "host:port")
+            if "://" in self.proxy:
+                proxy_parts = self.proxy.split("://")
+                proxy_type = proxy_parts[0].lower()
+                proxy_host_port = proxy_parts[1]
+            else:
+                proxy_type = "http"  # Default to HTTP proxy
+                proxy_host_port = self.proxy
+            
+            if ":" in proxy_host_port:
+                proxy_host, proxy_port = proxy_host_port.split(":")
+                proxy_port = int(proxy_port)
+            else:
+                proxy_host = proxy_host_port
+                proxy_port = 8080  # Default port
+            
+            # Set proxy preferences
+            if proxy_type in ["http", "https"]:
+                options.set_preference("network.proxy.type", 1)  # Manual proxy configuration
+                options.set_preference("network.proxy.http", proxy_host)
+                options.set_preference("network.proxy.http_port", proxy_port)
+                options.set_preference("network.proxy.ssl", proxy_host)
+                options.set_preference("network.proxy.ssl_port", proxy_port)
+            elif proxy_type == "socks":
+                options.set_preference("network.proxy.type", 1)
+                options.set_preference("network.proxy.socks", proxy_host)
+                options.set_preference("network.proxy.socks_port", proxy_port)
+                options.set_preference("network.proxy.socks_version", 5)  # SOCKS5
+            
+            # Don't use proxy for localhost
+            options.set_preference("network.proxy.no_proxies_on", "localhost, 127.0.0.1")
+
+        # Set Firefox binary path if configured
+        firefox_binary = self.config.get('selenium.firefox_binary_path', None)
+        if firefox_binary and os.path.exists(firefox_binary):
+            options.binary_location = firefox_binary
+            self.selenium_log.info(f"Using custom Firefox binary: {firefox_binary}")
+
+        # Use configured/overridden profile via get_profile()
+        try:
+            profile_path = self.get_profile()
+            if profile_path and os.path.exists(profile_path):
+                options.add_argument(f'--profile={profile_path}')
+                self.selenium_log.info(f"Using custom Firefox profile: {profile_path}")
+        except Exception as e:
+            self.selenium_log.debug(f"No Firefox profile provided via get_profile(): {e}")
+
+        try:
+            # Create Firefox service with configurable geckodriver path
+            service_kwargs = {}
+            geckodriver_path = self.config.get('selenium.selenium_executable_path', '/usr/local/bin/geckodriver')
+            if geckodriver_path and os.path.exists(geckodriver_path):
+                service_kwargs['executable_path'] = geckodriver_path
+                self.selenium_log.debug(f"Using custom geckodriver: {geckodriver_path}")
+            
+            service = FirefoxService(**service_kwargs)
+            
+            # Create Firefox driver
+            self.driver = webdriver.Firefox(service=service, options=options)
+            
+            # Apply common configuration
+            self.apply_common_driver_config()
+            
+        except (SessionNotCreatedException, WebDriverException) as e:
+            self.selenium_log.error(f"Error starting Firefox driver: {e}")
+            raise ProcessorException("Could not connect to browser (%s)." % str(e))
+                
+        driver_time = time.time() - driver_start        
+        self.selenium_log.info(f"Firefox driver creation took: {driver_time:.2f}s (PID: {self.driver.service.process.pid})")
+
+    def setup_virtual_display_mode(self, options, browser_type="generic"):
+        """
+        Configure virtual display vs headless mode for any browser
+        
+        :param options: Browser options object (ChromeOptions, FirefoxOptions, etc.)
+        :param browser_type: Type of browser for logging ("firefox", "chrome", "undetected-chrome")
+        :return: bool indicating if virtual display is being used
+        """
+        use_virtual_display = self.config.get('selenium.use_virtual_display', True)
+        display_available = self.start_virtual_display() if use_virtual_display else False
+
+        if display_available:
+            self.selenium_log.debug(f"Using virtual display for {browser_type} (better anti-detection)")
+            return True
+        else:
+            self.selenium_log.warning(f"Using headless mode for {browser_type} (virtual display not available or disabled)")
+            # Set headless mode - different for different browsers
+            if hasattr(options, 'headless'):
+                options.headless = True
+            if hasattr(options, 'add_argument'):
+                options.add_argument('--headless')
+            return False
+
+    def start_virtual_display(self):
+        """
+        Start virtual display using Xvfb for anti-detection
+        This makes browsers think they're running in a real display environment
+
+        :return: 
+        """
+        if not hasattr(self, 'xvfb_process') or self.xvfb_process is None:
+            try:
+                import subprocess
+                import os
+                
+                # Check if DISPLAY environment variable is set
+                display = os.environ.get('DISPLAY', ':99')
+                
+                # Check if Xvfb is already running on this display
+                try:
+                    result = subprocess.run(['ps', 'aux'], capture_output=True, text=True, timeout=5)
+                    if f'Xvfb {display}' in result.stdout:
+                        self.selenium_log.debug(f"Xvfb already running on display {display}")
+                        # Ensure DISPLAY is exported even if we didn't start Xvfb ourselves
+                        os.environ['DISPLAY'] = display
+                        self.xvfb_process = None  # We didn't start it, so don't try to stop it
+                        return True
+                except Exception:
+                    pass
+                
+                # Start Xvfb
+                width = os.environ.get('SCREEN_WIDTH', '1920')
+                height = os.environ.get('SCREEN_HEIGHT', '1080')
+                depth = os.environ.get('SCREEN_DEPTH', '24')
+                
+                xvfb_cmd = [
+                    'Xvfb', display,
+                    '-screen', '0', f'{width}x{height}x{depth}',
+                    '-ac', '+extension', 'GLX', '+render', '-noreset'
+                ]
+                
+                self.xvfb_process = subprocess.Popen(
+                    xvfb_cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    preexec_fn=os.setsid if hasattr(os, 'setsid') else None
+                )
+                
+                # Wait a moment for Xvfb to start
+                time.sleep(1)
+                
+                # Set DISPLAY environment variable for this process
+                os.environ['DISPLAY'] = display
+                
+                self.selenium_log.debug(f"Started Xvfb on display {display} with resolution {width}x{height}x{depth}")
+                return True
+                
+            except Exception as e:
+                self.selenium_log.warning(f"Failed to start virtual display: {e}. Falling back to headless mode.")
+                # Fall back to headless mode if Xvfb fails
+                self.xvfb_process = None
+                return False
+
+    def stop_virtual_display(self):
+        """
+        Stop virtual display if we started it
+        """
+        if hasattr(self, 'xvfb_process') and self.xvfb_process is not None:
+            try:
+                self.xvfb_process.terminate()
+                self.xvfb_process.wait(timeout=5)
+                self.selenium_log.debug("Stopped virtual display")
+            except Exception as e:
+                self.selenium_log.warning(f"Error stopping virtual display: {e}")
+                try:
+                    self.xvfb_process.kill()
+                except Exception:
+                    pass
+            finally:
+                self.xvfb_process = None
+
+    def get_user_agent(self):
+        """
+        Get user agent for the browser
+        """
+        # TODO: add input for agents to frontend/config
+        # Check out https://github.com/fake-useragent/fake-useragent
+        # ua = UserAgent(platforms='desktop', os=["Mac OS X", "Windows"], browsers="Firefox") for Firefox for example
+        if self.browser == "firefox":
+            agents = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0",
+            ]
+        else:
+            raise NotImplementedError(f"User agent retrieval not implemented for browser type: {self.browser}")
+        
+        return random.choice(agents)
+
+    def get_profile(self):
+        """
+        Get the user profile for the browser if it exists. This is used to allow Selenium to use an existing profile.
+
+        Can be overridden by subclasses to provide a specific profile path.
+        """
+        try:
+            # Determine active browser
+            browser = self.browser or self.config.get('selenium.browser')
+
+            path = None
+            if browser == 'firefox':
+                path = self.config.get('selenium.firefox_profile_path', None)
+            else:
+                raise NotImplementedError("Currently only Firefox is supported")
+
+            if not path:
+                return None
+
+            # Normalize env and relative paths
+            path = os.path.expanduser(os.path.expandvars(path))
+            if not os.path.isabs(path):
+                base = self.config.get('PATH_ROOT')
+                path = os.path.abspath(os.path.join(base, path))
+
+            if os.path.exists(path):
+                return path
+            else:
+                if hasattr(self, 'log') and self.log:
+                    self.log.warning(f"Configured profile not found at {path}; ignoring")
+                self.selenium_log.warning(f"Configured profile not found at {path}; ignoring")
+                return None
+        except Exception as e:
+            if hasattr(self, 'log') and self.log:
+                self.log.warning(f"get_profile() error: {e}")
+            self.selenium_log.warning(f"get_profile() error: {e}")
+            return None
+        
+    def apply_common_driver_config(self):
+        """
+        Apply common driver configuration after driver creation.
+        """
+        if not self.driver:
+            return
+            
+        # Apply timeouts from config
+        page_timeout = self.config.get('selenium.page_load_timeout', 60)
+        implicit_wait = self.config.get('selenium.implicit_wait', 10)
+
+        self.driver.set_page_load_timeout(page_timeout)
+        self.driver.implicitly_wait(implicit_wait)
+        
+        # Set window size to common resolution; maximize if possible
+        self.driver.set_window_size(1920, 1080)
+        self.driver.maximize_window()
+        
+        # Remove webdriver detection
         self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
-        total_time = time.time() - start_time
-        self.selenium_log.info(f"Total Selenium startup time: {total_time:.2f}s (PID: {self.driver.service.process.pid})")
+        self.selenium_log.debug(f"Applied page load timeout: {page_timeout}s")
+        self.selenium_log.debug(f"Applied implicit wait: {implicit_wait}s")
 
     def quit_selenium(self):
         """
@@ -321,6 +559,9 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             self.driver.quit()
         except Exception as e:
             self.selenium_log.error(e)
+
+        # Stop virtual display if we started it
+        self.stop_virtual_display()
 
     def restart_selenium(self, eager=None):
         """
@@ -609,7 +850,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
                 # If image in link, find alt text and add to link_text
                 for img in link.findAll('img'):
                     alt_text = img.get('alt')
-                    if alt_text and type(alt_text) == str:
+                    if alt_text and isinstance(alt_text, str):
                         link_text = ' '.join([link_text, alt_text])
                 # Fix URL if needed
                 if link_url.strip()[:4] == "http":
@@ -661,7 +902,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         def _scroll_to_top():
             try:
                 self.driver.execute_script("window.scrollTo(0, 0);")
-            except JavascriptException as e:
+            except JavascriptException:
                 # Apparently no window.scrollTo?
                 action = ActionChains(self.driver)
                 action.send_keys(Keys.HOME)
@@ -680,7 +921,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             # Scroll down
             try:
                 self.driver.execute_script("window.scrollTo(0, window.scrollY + window.innerHeight);")
-            except JavascriptException as e:
+            except JavascriptException:
                 # Apparently no window.scrollTo?
                 action = ActionChains(self.driver)
                 action.send_keys(Keys.PAGE_DOWN)
@@ -851,6 +1092,31 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
             "help": "Path to webdriver (geckodriver or chromedriver)",
             "tooltip": "fourcat_install.py installs to /usr/local/bin/geckodriver",
         },
+        "selenium.firefox_binary_path":{
+            "type": UserInput.OPTION_TEXT,
+            "default": None,
+            "help": "Path to Firefox binary",
+            "tooltip": "Selenium will attempt to locate the Firefox binary automatically if set to `None`.",
+        },
+        "selenium.firefox_profile_path":{
+            "type": UserInput.OPTION_TEXT,
+            "default": None,
+            "help": "Path to Firefox profile",
+            "tooltip": "`None` will create a temporary profile each startup.",
+        },
+        "selenium.page_load_timeout": {
+            "type": UserInput.OPTION_TEXT,
+            "help": "Default time to wait for page load",
+            "default": 60,
+            "coerce_type": int,
+            "tooltip": "May be overwritten by specific processors"
+        },
+        "selenium.implicit_wait": {
+            "type": UserInput.OPTION_TEXT,
+            "help": "Time to wait for elements to appear",
+            "default": 10,
+            "coerce_type": int,
+        },
         "selenium.firefox_extensions": {
             "type": UserInput.OPTION_TEXT_JSON,
             "default": {
@@ -865,6 +1131,13 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
             "help": "Show advanced options",
             "tooltip": "Show advanced options for Selenium processors",
         },
+        "selenium.use_virtual_display": {
+            "type": UserInput.OPTION_TOGGLE,
+            "default": False,
+            "help": "Use virtual display (Xvfb) if available",
+            "tooltip": "Use virtual display (Xvfb) if available; otherwise, headless mode is used",
+        },
+        
     }
 
     @classmethod
@@ -920,9 +1193,6 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
             self.log.error(f"InvalidSessionIdException: {e}")
             self.quit_selenium()
             raise ProcessorException("Selenium or browser unable to start; please wait and try again later")
-
-        # Sets timeout to 60; can be updated later if desired
-        self.set_page_load_timeout()
 
         self.dataset.log(f"Collecting posts {time.time() - start:.2f} seconds")
         # Normal Search function to be used To be implemented by descending classes!
