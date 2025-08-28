@@ -7,6 +7,8 @@ from urllib.parse import urlparse
 import datetime
 import requests
 import time
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from ural import is_url
 from dateutil.relativedelta import relativedelta
 from selenium.webdriver.common.by import By
@@ -127,11 +129,32 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
             if limit < 0:
                 url_params["fastLatest"] = "true"
 
-        response = requests.get("http://web.archive.org/cdx/search/cdx", params=url_params, timeout=60)
+        # Use HTTPS and a Session with retries/backoff for transient network errors
+        cdx_url = "https://web.archive.org/cdx/search/cdx"
+        session = requests.Session()
+        retry = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset(['GET', 'HEAD', 'OPTIONS'])
+        )
+        session.mount("https://", HTTPAdapter(max_retries=retry))
+        # If your environment requires proxies, allow requests to read env vars:
+        session.trust_env = True
+        try:
+            response = session.get(cdx_url, params=url_params, timeout=60)
+        except requests.exceptions.ConnectionError as e:
+            raise ProcessorException(f"Connection error to Archive.org CDX API: {e}")
+        except requests.exceptions.RequestException as e:
+            raise ProcessorException(f"Error requesting Archive.org CDX API: {e}")
+
         if response.status_code == 200:
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as e:
+                raise ProcessorException(f"Invalid JSON from Archive.org CDX API: {e}")
         else:
-            raise ProcessorException(f"Error {response.status_code} from Archive.org CDX server")
+            raise ProcessorException(f"Error {response.status_code} from Archive.org CDX server: {response.text[:200]}")
         
     @staticmethod
     def create_web_archive_url(date, url):
@@ -312,10 +335,26 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
                     captures_json = self.request_available_archive_urls(url, min_date=min_date, max_date=max_date, limit=limit)
                 except Exception as e:
                     self.dataset.log(f"Unable to reach Web Archive API: {url} - {str(e)}")
+                    # Yield a failure event so callers can record/report the failure
+                    yield {
+                        'ok': False,
+                        'url': url,
+                        'seg_start': None,
+                        'fail_url': None,
+                        'error': f"WebArchive API error: {str(e)}",
+                    }
                     continue
 
                 if not captures_json or len(captures_json) <= 1:
                     self.dataset.log(f"No archived snapshots found for {url} in given range")
+                    # Yield a failure event so callers can record/report the missing snapshots
+                    yield {
+                        'ok': False,
+                        'url': url,
+                        'seg_start': None,
+                        'fail_url': None,
+                        'error': 'No archived snapshots found in given range',
+                    }
                     continue
 
                 # Normalize and sort captures by timestamp asc
@@ -442,8 +481,11 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
         else:
             self.dataset.update_status('Scraping Web Archives with Selenium %s' % self.browser)
 
+        failures = 0
+        successes = 0
         for event in self.iter_snapshots(query):
             if event.get('ok'):
+                successes += 1
                 # Extract content and yield an item (HTML scraper behavior)
                 content = self.extract_web_archive_content(self.driver)
                 dt = event['dt']
@@ -483,13 +525,17 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
 
                 yield result
             else:
+                failures += 1
                 seg_start = event['seg_start']
                 fail_url = event['fail_url']
+                datetimestr = seg_start.strftime('%Y-%m-%d %H:%M:%S') if seg_start else None
+                self.dataset.update_status(f"Failed snapshot: {event['url']}{' @ ' + datetimestr if datetimestr else ''}")
+                self.dataset.log(f"Failed snapshot: {event['url']}{' @ ' + datetimestr if datetimestr else ''} - {event.get('error', '')}")
                 yield {
                     "id": url_to_hash(fail_url),
                     "base_url": event['url'],
                     "year": seg_start.year if seg_start else None,
-                    "date": seg_start.strftime('%Y-%m-%d %H:%M:%S') if seg_start else None,
+                    "date": datetimestr,
                     "url": fail_url,
                     "final_url": None,
                     "subject": None,
@@ -502,6 +548,11 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
                     "selenium_links": [],
                     "scraped_links": [],
                 }
+
+        if failures:
+            self.dataset.update_status(f"Completed with {successes} screenshots and {failures} failures; see log for details", is_final=True)
+        else:
+            self.dataset.update_status(f"Completed with {successes} screenshots and no failures")
 
 
     def request_get_w_error_handling(self, url, retries=3, **kwargs):

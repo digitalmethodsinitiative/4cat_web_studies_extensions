@@ -6,9 +6,9 @@ Currently designed around Firefox, but can also work with Chrome; results may va
 import datetime
 import json
 
+from extensions.web_studies.datasources.url_screenshots.search_webpage_screenshots  import ScreenshotWithSelenium
 from extensions.web_studies.datasources.web_archive_scraper.search_web_archive import SearchWebArchiveWithSelenium
 from common.lib.user_input import UserInput
-from common.lib.helpers import url_to_hash
 
 
 class _MissingAttribute:
@@ -96,11 +96,16 @@ class ScreenshotWebArchiveWithSelenium(SearchWebArchiveWithSelenium):
 
         metadata = {}
         screenshots = 0
+        failures = 0
         for event in self.iter_snapshots(query):
             if not event.get('ok'):
                 # record failure in metadata for transparency
+                failures += 1
                 seg_start = event['seg_start']
                 metadata_key = event['url'] + '@' + (seg_start.strftime('%Y%m%d%H%M%S') if seg_start else 'segment')
+                datetimestr = seg_start.strftime('%Y-%m-%d %H:%M:%S') if seg_start else None
+                self.dataset.update_status(f"Failed snapshot: {event['url']}{' @ ' + datetimestr if datetimestr else ''}")
+                self.dataset.log(f"Failed snapshot: {event['url']}{' @ ' + datetimestr if datetimestr else ''} - {event.get('error', '')}")
                 metadata[metadata_key] = {
                     'url': event['url'],
                     'fail_url': event['fail_url'],
@@ -113,7 +118,7 @@ class ScreenshotWebArchiveWithSelenium(SearchWebArchiveWithSelenium):
             snapshot_url = event['snapshot_url']
             base_url = event['url']
             ts_slug = dt.strftime('%Y%m%d%H%M%S') if dt else 'unknown'
-            filename = f"screenshot_{ts_slug}_{url_to_hash(snapshot_url)}.png"
+            filename = ScreenshotWithSelenium.filename_from_url(snapshot_url) + ".png"
             out_path = staging.joinpath(filename)
 
             error = ''
@@ -147,6 +152,8 @@ class ScreenshotWebArchiveWithSelenium(SearchWebArchiveWithSelenium):
 
         # Update status and return the path to the staging area (consistent with search_webpage_screenshots behavior)
         self.dataset.update_status("Compressing images")
+        if failures:
+            self.dataset.update_status(f"Completed with {screenshots} screenshots and {failures} failures; see log for details", is_final=True)
         return staging
   
     # Intentionally hide the inherited 'map_item' so hasattr(..., 'map_item') returns False for this zip of images

@@ -1177,14 +1177,12 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
         if not self.is_selenium_available(config=self.config):
             raise ProcessorException("Selenium not available; please ensure browser and webdriver are installed and configured in settings")
         
-        
-        self.dataset.log(f"Starting selenium {time.time() - start:.2f} seconds")
         try:
             self.start_selenium(eager=self.eager_selenium)
         except ProcessorException as e:
             self.quit_selenium()
             raise e
-        self.dataset.log(f"Started selenium {time.time() - start:.2f} seconds")
+        self.dataset.log(f"Started selenium and {self.browser} ({time.time() - start:.2f} seconds)")
         # Returns to default position; i.e., 'data:,'
         try:
             self.reset_current_page()
@@ -1194,7 +1192,7 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
             self.quit_selenium()
             raise ProcessorException("Selenium or browser unable to start; please wait and try again later")
 
-        self.dataset.log(f"Collecting posts {time.time() - start:.2f} seconds")
+        self.dataset.log("Collecting posts...")
         # Normal Search function to be used To be implemented by descending classes!
         try:
             posts = self.get_items(query)
