@@ -155,18 +155,6 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
                 raise ProcessorException(f"Invalid JSON from Archive.org CDX API: {e}")
         else:
             raise ProcessorException(f"Error {response.status_code} from Archive.org CDX server: {response.text[:200]}")
-        
-    @staticmethod
-    def create_web_archive_url(date, url):
-        """
-        Create a Web Archive URL for a specific date and original URL.
-
-        :param date: The date of the archived snapshot.
-        :param url: The original URL to be archived.
-        :return: The Web Archive URL.
-        """
-        date_str = date.strftime('%Y%m%d%H%M%S')
-        return f"http://web.archive.org/web/{date_str}/{url}"
     
     @staticmethod
     def check_web_archive_page_loaded(driver):
@@ -175,10 +163,10 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
         """
         try:
             # Wait for DOM ready and presence of <body>
-            WebDriverWait(driver, 30).until(
+            WebDriverWait(driver, 45).until(
                 lambda d: d.execute_script('return document.readyState') == 'complete'
             )
-            WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
+            WebDriverWait(driver, 45).until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
             # TODO: revisit
             # Try to wait for meaningful content: main/article/role=main or hydrated #__next children
             # content_ready = False
@@ -394,12 +382,14 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
                 for dt, r in seg_caps:
                     ts = r[1]
                     original_url = r[2] if len(r) > 2 else url
-                    snapshot_url = f"http://web.archive.org/web/{ts}/{original_url}"
+                    snapshot_url = f"https://web.archive.org/web/{ts}/{original_url}"
 
                     # Try to navigate
                     success, errors = self.get_with_error_handling(snapshot_url, max_attempts=2, wait=2, restart_browser=True)
                     if not success:
-                        segment_error += ('\n'.join([str(e) for e in errors]) + '\n') if errors else ''
+                        error_message = f"Failed to retrieve {snapshot_url}: {errors}"
+                        segment_error += error_message + '\n'
+                        self.dataset.log(error_message)
                         continue
                     
                     # Scroll to bottom of page to load
@@ -407,7 +397,9 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
 
                     # Wait for load and handle possible redirect within archive playback
                     if not self.check_page_is_loaded(max_time=60):
-                        segment_error += f"Timeout loading {snapshot_url}\n"
+                        error_message = f"Timeout loading {snapshot_url}\n"
+                        segment_error += error_message
+                        self.dataset.log(error_message)
                         continue
 
                     # If Wayback reports redirect, wait briefly for movement
@@ -429,12 +421,16 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
                             # Re-check load
                             self.scroll_down_page_to_load(max_time=30)
                             if not self.check_page_is_loaded(max_time=30):
-                                segment_error += f"Redirected but final page did not load for {snapshot_url}\n"
+                                error_message = f"Redirected but final page did not load for {snapshot_url}\n"
+                                segment_error += error_message
+                                self.dataset.log(error_message)
                                 continue
 
                     # Final validation against IA internal error pages
                     if not self.check_web_archive_page_loaded(self.driver):
-                        segment_error += f"Archive page not properly loaded for {snapshot_url}\n"
+                        error_message = f"Archive page not properly loaded for {snapshot_url}\n"
+                        segment_error += error_message
+                        self.dataset.log(error_message)
                         continue
 
                     # Success for this segment
@@ -443,7 +439,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
                     completed_segments += 1
                     if total_segments:
                         self.dataset.update_progress(completed_segments / total_segments)
-                    self.dataset.update_status(f"Captured {completed_segments} of {total_segments} possible segments")
+                    self.dataset.update_status(f"Captured snapshot for {url} in segment {seg_start} to {seg_end} ({completed_segments}/{total_segments})")
                     yield {
                         'ok': True,
                         'url': url,
@@ -458,7 +454,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
                     completed_segments += 1
                     if total_segments:
                         self.dataset.update_progress(completed_segments / total_segments)
-                    self.dataset.update_status(f"Captured {completed_segments} of {total_segments} possible segments")
+                    self.dataset.update_status(f"Failed to capture snapshot for {url} in segment {seg_start} to {seg_end} ({completed_segments}/{total_segments})")
 
                     fail_url = f"{self.web_archive_url}{seg_start.strftime('%Y%m%d%H%M%S') if seg_start else ''}/{url}"
                     yield {
@@ -600,64 +596,6 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
         page_result['selenium_links'] = ','.join(map(str, page_result.get('selenium_links'))) if isinstance(page_result.get('selenium_links'), list) else page_result.get('selenium_links', '')
 
         return MappedItem(page_result)
-
-    @staticmethod
-    def create_web_archive_urls(url, start_date, end_date, frequency):
-        """
-        Combines url with Web Archive base (https://web.archive.org/web/) if
-        needed along with start date to create urls. Will use frequency to
-        create additional urls if needed.
-
-        :param str url: url as string
-        :param start_date: starting date
-        :param end_date: ending date
-        :param string frequency: frequency of scrape
-        :return list: List of urls to scrape
-        """
-        web_archive_url = 'https://web.archive.org/web/'
-        min_date = datetime.datetime.fromtimestamp(int(start_date))
-        max_date = datetime.datetime.fromtimestamp(int(end_date))
-
-        # if already formated, return as is
-        if web_archive_url == url[:len(web_archive_url)]:
-            return [{'base_url': url, 'year': min_date.year, 'url': url}]
-
-        if frequency == 'yearly':
-            years = [year for year in range(min_date.year, max_date.year+1)]
-
-            return  [
-                     {
-                     'base_url': url,
-                     'year': year,
-                     'url': web_archive_url + str(year) + min_date.strftime('%m%d') + '/' + url,
-                     }
-                    for year in years]
-
-        elif frequency in ('monthly', 'weekly', 'daily'):
-            dates_needed = []
-            current = min_date
-            while current <= max_date:
-                dates_needed.append({
-                     'base_url': url,
-                     'year': current.year,
-                     'url': web_archive_url + current.strftime('%Y%m%d') + '/' + url,
-                     })
-                if frequency == 'weekly':
-                    current += relativedelta(weeks=1)
-                elif frequency == 'monthly':
-                    current += relativedelta(months=1)
-                elif frequency == 'daily':
-                    current += relativedelta(days=1)
-                else:
-                    raise ProcessorException("Frequency %s not implemented!" % frequency)
-
-            return dates_needed
-
-        elif frequency == 'first':
-            return [{'base_url': url, 'year': min_date.year, 'url': web_archive_url + min_date.strftime('%Y%m%d') + '/' + url}]
-
-        else:
-            raise Exception('frequency type %s not implemented!' % frequency)
 
     @staticmethod
     def validate_query(query, request, config):

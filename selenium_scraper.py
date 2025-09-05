@@ -2,6 +2,7 @@ import random
 import subprocess
 import time
 import shutil
+import signal
 import abc
 import os
 from urllib.parse import urljoin
@@ -9,6 +10,7 @@ from bs4 import BeautifulSoup
 from bs4.element import Comment
 from ural import is_url
 from requests.utils import requote_uri
+from urllib.parse import urlparse, parse_qs, unquote
 
 from backend.lib.search import Search
 from common.lib.exceptions import ProcessorException
@@ -90,7 +92,27 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
 
         self._setup_done = True
 
-    def get_with_error_handling(self, url, max_attempts=1, wait=0, restart_browser=False):
+    def get_firefox_neterror_info(self):
+        """
+        Returns (is_neterror, reason, target_url, raw_url) based on Firefox about:neterror.
+        """
+        try:
+            current = self.driver.current_url
+        except UnexpectedAlertPresentException:
+            self.dismiss_alert()
+            current = self.driver.current_url
+
+        if isinstance(current, str) and current.startswith("about:neterror"):
+            try:
+                qs = parse_qs(urlparse(current).query)
+                reason = (qs.get("e", [""])[0] or "").strip()
+                target = unquote((qs.get("u", [""])[0] or "").strip())
+                return True, reason, target, current
+            except Exception:
+                return True, "", "", current
+        return False, "", "", current
+
+    def get_with_error_handling(self, url, max_attempts=1, wait=0, restart_browser=True):
         """
         Attempts to call driver.get(url) with error handling. Will attempt to restart Selenium if it fails and can
         attempt to kill Firefox (and allow Selenium to restart) itself if allowed.
@@ -111,23 +133,27 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             attempts += 1
             try:
                 self.driver.get(url)
-                success = True
-                self.consecutive_errors = 0
+                # Detect Firefox neterror and treat as failure
+                is_ne, reason, target, raw = self.get_firefox_neterror_info()
+                if is_ne:
+                    msg = f"Firefox neterror '{reason or 'unknown'}' loading {target or url}"
+                    self.selenium_log.warning(msg)
+                    errors.append(msg)
+                    success = False
+                    self.consecutive_errors += 1
+                else:
+                    success = True
+                    self.consecutive_errors = 0
             except TimeoutException as e:
                 errors.append(f"Timeout retrieving {url}: {e}")
             except Exception as e:
                 self.selenium_log.error(f"Error driver.get({url}){(' (dataset '+self.dataset.key+') ') if hasattr(self, 'dataset') else ''}: {e}")
                 errors.append(e)
                 self.consecutive_errors += 1
-                
-                # Check consecutive errors
-                if self.consecutive_errors > self.num_consecutive_errors_before_restart:
-                    # First kill browser
-                    if restart_browser:
-                        self.kill_browser(self.browser)
-                    
-                    # Then restart Selenium
-                    self.restart_selenium()
+
+            # Restart after too many consecutive failures
+            if self.consecutive_errors > self.num_consecutive_errors_before_restart:
+                self.restart_selenium(restart_browser=restart_browser)
 
             if success:
                 # Check for movement
@@ -549,7 +575,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         self.selenium_log.debug(f"Applied page load timeout: {page_timeout}s")
         self.selenium_log.debug(f"Applied implicit wait: {implicit_wait}s")
 
-    def quit_selenium(self):
+    def quit_selenium(self, restart_browser=False):
         """
         Always attempt to close the browser otherwise multiple versions of Chrome will be left running.
 
@@ -559,15 +585,21 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             self.driver.quit()
         except Exception as e:
             self.selenium_log.error(e)
+        self.driver = None
+        self.last_scraped_url = None
+
+        if restart_browser:
+            time.sleep(2)
+            self.kill_browser()
 
         # Stop virtual display if we started it
         self.stop_virtual_display()
 
-    def restart_selenium(self, eager=None):
+    def restart_selenium(self, eager=None, restart_browser=False):
         """
         Weird Selenium error? Restart and try again.
         """
-        self.quit_selenium()
+        self.quit_selenium(restart_browser=restart_browser)
         self.start_selenium(eager=eager)
         self.reset_current_page()
 
@@ -604,6 +636,13 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             # attempt to dismiss random alert
             self.dismiss_alert()
             current_url = self.driver.current_url
+
+        # Treat Firefox error page as no movement
+        is_ne, reason, target, raw = self.get_firefox_neterror_info()
+        if is_ne:
+            self.selenium_log.debug(f"Treated about:neterror as no movement: {reason} for {target or current_url}")
+            return False
+
         if current_url == self.last_scraped_url:
             return False
         else:
@@ -945,14 +984,27 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             last_bottom = current_bottom
             time.sleep(.2)
 
-    def kill_browser(self, browser):
-        self.selenium_log.info(f"4CAT is killing {browser} with PID: {self.driver.service.process.pid}")
+    def kill_browser(self):
+        self.selenium_log.info(f"4CAT is killing {self.browser} with PID: {self.driver.service.process.pid}")
         try:
-            subprocess.check_call(['kill', str(self.driver.service.process.pid)])
+            pid = self.driver.service.process.pid  # geckodriver PID
+            try:
+                pgid = os.getpgid(pid)
+                # Kill the whole group (geckodriver + firefox children)
+                os.killpg(pgid, signal.SIGTERM)
+                time.sleep(2)
+                # If still alive, force kill
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            except Exception:
+                # Fallback to direct PID kill
+                subprocess.check_call(['kill', str(pid)])
         except subprocess.CalledProcessError as e:
-            self.selenium_log.error(f"Error killing {browser}: {e}")
+            self.selenium_log.error(f"Error killing {self.browser}: {e}")
+        finally:
             self.quit_selenium()
-            raise e
 
     def destroy_to_click(self, button, max_time=5):
         """
