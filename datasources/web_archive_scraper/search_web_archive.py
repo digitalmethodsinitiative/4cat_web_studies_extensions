@@ -179,17 +179,18 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
                 lambda d: d.execute_script('return document.readyState') == 'complete'
             )
             WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
+            # TODO: revisit
             # Try to wait for meaningful content: main/article/role=main or hydrated #__next children
-            content_ready = False
-            try:
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "main, article, [role='main'], #__next > *"))
-                )
-                content_ready = True
-            except TimeoutException:
-                content_ready = False
-            if not content_ready:
-                return False
+            # content_ready = False
+            # try:
+            #     WebDriverWait(driver, 10).until(
+            #         EC.presence_of_element_located((By.CSS_SELECTOR, "main, article, [role='main'], #__next > *"))
+            #     )
+            #     content_ready = True
+            # except TimeoutException:
+            #     content_ready = False
+            # if not content_ready:
+            #     return False
         except TimeoutException:
             return False
 
