@@ -17,7 +17,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 
 from extensions.web_studies.selenium_scraper import SeleniumSearch
-from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException, ProcessorException
+from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException, ProcessorException, QueryNeedsExplicitConfirmationException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
 from common.lib.helpers import url_to_hash
@@ -685,8 +685,19 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
         query["min_date"], query["max_date"] = query.get("daterange")
         if query["max_date"] is None:
             query["max_date"] = int(datetime.datetime.now().timestamp())
+        if query["min_date"] is None:
+            raise QueryParametersException("Please provide a start date.")
         if query["max_date"] < query["min_date"]:
             raise QueryParametersException("End date must be after start date.")
+        
+        if not query.get("frontend-confirm"):
+            # Estimate max possible snapshots to avoid overload
+            frequency = query.get("frequency", "first")
+            segments = SearchWebArchiveWithSelenium.build_segments(query["min_date"], query["max_date"], frequency)
+            if len(segments) > 50:
+                warning = "This query requests %s snapshots per URL" % ("{:,}".format(len(segments)))
+                warning += " Do you want to continue?"
+                raise QueryNeedsExplicitConfirmationException(warning)
 
         return {
             "query": query.get("query"),
