@@ -44,39 +44,50 @@ class ScreenshotWebArchiveWithSelenium(SearchWebArchiveWithSelenium):
         options = {
             "intro-1": {
                 "type": UserInput.OPTION_INFO,
-                "help": "Screenshot pages from the Web Archive (web.archive.org) using Selenium and Firefox. By setting a frequency, you can collect multiple snapshots of the same page over time."
+                "help": "Make screenshots of archived versions of a website using the Internet Archive's "
+                        "[Wayback Machine](https://web.archive.org/). These are opened with a Firefox browser. By setting a screenshot interval, "
+                        "you can collect multiple snapshots of the same page over time.\n\nNote that the "
+                        "Wayback Machine is a (very) *slow* website and screenshot wait times add up quickly; "
+                        "it is recommended to start 'zoomed out' (e.g. with yearly screenshots) and use a "
+                        "narrow date range for higher frequencies."
             },
             "query-info": {
                 "type": UserInput.OPTION_INFO,
-                "help": "Please enter a list of urls one per line."
+                "help": "Please enter a list of URLs, one per line."
             },
             "query": {
                 "type": UserInput.OPTION_TEXT_LARGE,
-                "help": "List of urls"
+                "help": "List of URLs",
+                "tooltip": "These should be the URLs to collect archived versions of. Separate with commas or new lines."
+            },
+            "frequency-info": {
+                "type": UserInput.OPTION_INFO,
+                "help": "At what interval should screenshots be captured? 'First Available' collects the single "
+                        "earliest available version per URL."
             },
             "frequency": {
                 "type": UserInput.OPTION_CHOICE,
-                "help": "Frequency over time period",
-                "tooltip": "Default 'First Available' scrapes the first available result after start date",
+                "help": "Interval",
                 "options": {
                     "first": "First Available",
+                    "yearly": "Yearly",
                     "monthly": "Monthly",
                     "weekly": "Weekly",
-                    "daily": "Daily",
-                    "yearly": "Yearly"
+#                    "daily": "Daily",
                 },
                 "default": "first"
             },
             "daterange": {
                 "type": UserInput.OPTION_DATERANGE,
-                "tooltip": "Scrapes first available page after start date; Uses start and end date for frequency",
+                "tooltip": "Scrapes first available page after start date; if capturing at an interval, "
+                           "archived versions between these dates are included.",
                 "help": "Date range"
             },
             "pause-time": {
                 "type": UserInput.OPTION_TEXT,
                 "help": "Pause time",
                 "tooltip": "Before each screenshot, wait this many seconds before taking the screenshot. This can help "
-                           "with images loading.",
+                           "with pages that are slow to load completely.",
                 "default": 6,
                 "min": 2,
                 "max": 30,
