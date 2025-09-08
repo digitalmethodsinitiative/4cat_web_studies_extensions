@@ -985,8 +985,8 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             time.sleep(.2)
 
     def kill_browser(self):
-        self.selenium_log.info(f"4CAT is killing {self.browser} with PID: {self.driver.service.process.pid}")
         try:
+            self.selenium_log.info(f"4CAT is killing {self.browser} with PID: {self.driver.service.process.pid}")
             pid = self.driver.service.process.pid  # geckodriver PID
             try:
                 pgid = os.getpgid(pid)
@@ -1003,6 +1003,8 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
                 subprocess.check_call(['kill', str(pid)])
         except subprocess.CalledProcessError as e:
             self.selenium_log.error(f"Error killing {self.browser}: {e}")
+        except AttributeError:
+            self.selenium_log.warning(f"Trying to kill {self.browser}, but driver is already None")
         finally:
             self.quit_selenium()
 
