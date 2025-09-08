@@ -287,4 +287,8 @@ class ScreenshotWithSelenium(SeleniumSearch):
                 # Extract archived domain
                 domain = archived_url.split("://")[1].split("/")[0].strip("/") + "-archived"
 
+        # Replace `:` before port in domain
+        if ":" in domain:
+            domain = domain.replace(":", "_")
+
         return f"{domain}-{timestamp}-{url_hash}"

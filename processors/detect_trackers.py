@@ -345,13 +345,13 @@ class GhosteryDataUpdater(BasicWorker):
         # Build Ghostery tracker database dependencies
         result = subprocess.run(["npm", "install"], capture_output=True, cwd=ghostery_repo)
         if result.returncode != 0:
-            self.log.error("Error installing Ghostery tracker database")
+            self.log.error("Error installing Ghostery tracker database with npm; try installing manually to update trackers")
             return False
         
         # Create trackerdb.json file
         result = subprocess.run(["node", "scripts/export-json/index.js"], capture_output=True, cwd=ghostery_repo)
         if result.returncode != 0:
-            self.log.error("Error building Ghostery tracker database")
+            self.log.error("Error building Ghostery tracker database with node; try building manually to update trackers")
             return False
 
         # Check trackerdb.json file exists
