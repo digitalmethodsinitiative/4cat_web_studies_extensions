@@ -46,6 +46,8 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
 
     urls_to_exclude = ['mailto:', 'javascript', 'archive.org/about', 'archive.org/account/']
 
+    max_snapshots_per_segment = 10  # avoid excessive scraping of single URL
+
     @classmethod
     def get_options(cls, parent_dataset=None, config=None):
         options = {
@@ -74,6 +76,15 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
                 },
                 "default": "first"
             },
+            # TODO: do we want this as a user setting? perhaps only a 4cat config option set by admin.
+            # "max_snapshots_per_segment": {
+            #     "type": UserInput.OPTION_NUMBER,
+            #     "help": "Maximum attempts per segment (max 10)",
+            #     "default": 10,
+            #     "min": 1,
+            #     "max": 10,
+            #     "tooltip": "To avoid excessive scraping, limit the number of snapshots to attempts per time segment"
+            # },
             "daterange": {
                 "type": UserInput.OPTION_DATERANGE,
                 "tooltip": "Scrapes first available page after start date; Uses start and end date for frequency",
@@ -301,6 +312,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
         min_date = query.get('min_date')
         max_date = query.get('max_date')
         frequency = query.get('frequency')
+        max_snapshots_per_segment = query.get("max_snapshots_per_segment", self.max_snapshots_per_segment)
 
         # Precompute total segments for progress
         total_segments = 0
@@ -378,8 +390,13 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
                 # Attempt each capture in this segment until one loads properly
                 segment_success = False
                 segment_error = ''
-
+                attempted_captures = 0
                 for dt, r in seg_caps:
+                    if (max_snapshots_per_segment > 0) and (attempted_captures >= max_snapshots_per_segment):
+                        # Safety valve to avoid excessive attempts on single URL
+                        self.dataset.log(f"Reached max snapshots per segment for {url} in segment {seg_start} to {seg_end}")
+                        break
+                    attempted_captures += 1
                     ts = r[1]
                     original_url = r[2] if len(r) > 2 else url
                     snapshot_url = f"https://web.archive.org/web/{ts}/{original_url}"
