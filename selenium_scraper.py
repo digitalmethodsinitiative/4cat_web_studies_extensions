@@ -56,6 +56,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
     selenium_log = None
     config = None
     _setup_done = False
+    browser_pid = None
 
     consecutive_errors = 0
     num_consecutive_errors_before_restart = 3
@@ -118,6 +119,11 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         attempt to kill Firefox (and allow Selenium to restart) itself if allowed.
 
         Returns a tuple containing a bool (True if successful, False if not) and a list of the errors raised.
+
+        :param str url:                URL to retrieve
+        :param int max_attempts:       Maximum number of attempts to retrieve the URL
+        :param int wait:               Seconds to wait between attempts
+        :param bool restart_browser:   If True, will kill the browser process if too many consecutive errors occur
         """
         # Start clean
         try:
@@ -153,7 +159,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
 
             # Restart after too many consecutive failures
             if self.consecutive_errors > self.num_consecutive_errors_before_restart:
-                self.restart_selenium(restart_browser=restart_browser)
+                self.restart_selenium(kill_browser=restart_browser)
 
             if success:
                 # Check for movement
@@ -255,10 +261,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         Start a browser with Selenium
 
         :param bool eager:  Eager loading? If None, uses class attribute self.eager_selenium (default False)
-        """
-        import time
-        start_time = time.time()
-        
+        """        
         # Ensure we have a config object
         if not self._setup_done:
             # config can be passed directly
@@ -288,7 +291,9 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             raise NotImplementedError("Currently only Firefox is supported")
         else:
             self.setup_firefox()
+        
         self.last_scraped_url = None
+        self.browser_pid = self.driver.service.process.pid
 
     def setup_firefox(self):
         """
@@ -575,12 +580,12 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         self.selenium_log.debug(f"Applied page load timeout: {page_timeout}s")
         self.selenium_log.debug(f"Applied implicit wait: {implicit_wait}s")
 
-    def quit_selenium(self, restart_browser=False):
+    def quit_selenium(self, kill_browser=False):
         """
         Always attempt to close the browser otherwise multiple versions of Chrome will be left running.
 
         And Chrome is a memory hungry monster.
-        """
+        """        
         try:
             self.driver.quit()
         except Exception as e:
@@ -588,18 +593,21 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         self.driver = None
         self.last_scraped_url = None
 
-        if restart_browser:
+        if kill_browser:
             time.sleep(2)
             self.kill_browser()
 
-        # Stop virtual display if we started it
+        # Clear browser PID
+        self.browser_pid = None
+
+        # Stop virtual display (only if we started it)
         self.stop_virtual_display()
 
-    def restart_selenium(self, eager=None, restart_browser=False):
+    def restart_selenium(self, eager=None, kill_browser=False):
         """
         Weird Selenium error? Restart and try again.
         """
-        self.quit_selenium(restart_browser=restart_browser)
+        self.quit_selenium(kill_browser=kill_browser)
         self.start_selenium(eager=eager)
         self.reset_current_page()
 
@@ -986,8 +994,16 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
 
     def kill_browser(self):
         try:
-            self.selenium_log.info(f"4CAT is killing {self.browser} with PID: {self.driver.service.process.pid}")
-            pid = self.driver.service.process.pid  # geckodriver PID
+            # Prefer current driver PID if available
+            if self.driver is None or self.driver.service is None or self.driver.service.process is None or self.driver.service.process.pid is None:
+                if self.browser_pid:
+                    pid = self.browser_pid
+                else:
+                    self.selenium_log.warning(f"Trying to kill {self.browser}, but unable to determine PID")
+                    return
+            else:
+                pid = self.driver.service.process.pid  # geckodriver/chromedriver PID
+            self.selenium_log.info(f"4CAT is killing {self.browser} with PID: {pid}")
             try:
                 pgid = os.getpgid(pid)
                 # Kill the whole group (geckodriver + firefox children)
@@ -1002,11 +1018,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
                 # Fallback to direct PID kill
                 subprocess.check_call(['kill', str(pid)])
         except subprocess.CalledProcessError as e:
-            self.selenium_log.error(f"Error killing {self.browser}: {e}")
-        except AttributeError:
-            self.selenium_log.warning(f"Trying to kill {self.browser}, but driver is already None")
-        finally:
-            self.quit_selenium()
+            self.selenium_log.error(f"Error killing {self.browser} (PID: {pid}): {e}")
 
     def destroy_to_click(self, button, max_time=5):
         """
@@ -1225,7 +1237,6 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
         :param dict query:  Query parameters
         :return:  Iterable of matching items, or None if there are no results.
         """
-        import time
         start = time.time()
         self.dataset.log(f"Checking for selenium {time.time() - start:.2f} seconds")
         if not self.is_selenium_available(config=self.config):
