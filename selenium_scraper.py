@@ -138,7 +138,8 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         while attempts < max_attempts:
             attempts += 1
             try:
-                self.driver.get(url)
+                # Wrap navigation to auto-handle sporadic, unexpected alerts without JS overrides
+                self.safe_action(lambda: self.driver.get(url))
                 # Detect Firefox neterror and treat as failure
                 is_ne, reason, target, raw = self.get_firefox_neterror_info()
                 if is_ne:
@@ -317,6 +318,19 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         options.set_preference("browser.privatebrowsing.autostart", True)
         options.set_preference("browser.cache.disk.enable", False)
         options.set_preference("browser.cache.memory.enable", False)
+        # Optionally adjust prefs that reduce disruptive dialogs; kept behind config for stealth
+        if self.config.get('selenium.reduce_dialog_prefs', False):
+            options.set_preference("dom.webnotifications.enabled", False)
+            options.set_preference("dom.push.enabled", False)
+            # Disabling beforeunload prevents sites from prompting on leave; toggle off if detection suspected
+            options.set_preference("dom.disable_beforeunload", True)
+        # Configure unhandled prompt behavior (internal to webdriver; page JS cannot read)
+        try:
+            behavior = self.config.get('selenium.unhandled_prompt_behavior', 'dismiss') if self.config else 'dismiss'
+            # W3C capability name
+            options.set_capability('unhandledPromptBehavior', behavior)
+        except Exception:
+            pass
 
         # TODO: setting to block images; REMOVE for screenshot capture
         # options.set_preference("permissions.default.image", 2)  # Block images for speed
@@ -657,17 +671,81 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             return True
 
     def dismiss_alert(self):
+        """Attempt to dismiss or accept any present alert with minimal side-effects.
+
+        Stealth approach:
+        - Do NOT monkey patch window.alert/confirm/prompt globally.
+        - Small random reaction delay to mimic a human noticing the dialog.
+        - Track origin counts (not currently used for escalation but available).
+        Returns True if an alert was handled, else False.
         """
-        Dismiss any alert that may be present
-        """
+        if not self.driver:
+            return False
         current_window_handle = self.driver.current_window_handle
         try:
             alert = self.driver.switch_to.alert
-            if alert:
-                alert.dismiss()
         except NoAlertPresentException:
-            return
+            return False
+        except UnexpectedAlertPresentException:
+            # Retry once
+            try:
+                alert = self.driver.switch_to.alert
+            except Exception:
+                return False
+        except Exception:
+            return False
+
+        # Brief delay (50-170 ms)
+        time.sleep(random.uniform(0.05, 0.17))
+        acted = 'none'
+        try:
+            alert.dismiss()
+            acted = 'dismissed'
+        except Exception:
+            try:
+                alert.accept()
+                acted = 'accepted'
+            except Exception:
+                acted = 'unhandled'
+
+        # Return to original window (alert switch may change focus)
         self.driver.switch_to.window(current_window_handle)
+
+        if self.selenium_log:
+            self.selenium_log.debug(f"Alert: {acted} - Text: {getattr(alert, 'text', '')}")
+        return acted in ('dismissed', 'accepted')
+
+    def safe_action(self, callable_obj, retries=2, delay=0.25):
+        """Execute a WebDriver action handling sporadic UnexpectedAlertPresentException.
+
+        Strategy:
+        - Attempt callable.
+        - If UnexpectedAlertPresentException occurs, dismiss alert, jittered delay, retry.
+        - Avoid global JS overrides to remain less detectable.
+
+        :param callable_obj: Zero-argument function wrapping WebDriver call.
+        :param retries: Times to retry after alert dismissal.
+        :param delay: Base delay (seconds) before retry; jitter added for realism.
+        :return: Result of callable_obj if successful.
+        :raises: Last exception if unrecoverable.
+        """
+        attempt = 0
+        last_exc = None
+        while attempt <= retries:
+            try:
+                return callable_obj()
+            except UnexpectedAlertPresentException as e:
+                last_exc = e
+                self.dismiss_alert()
+                # Jittered delay (e.g., 0.25s +/- up to ~33%)
+                time.sleep(delay + random.uniform(0, delay/3))
+                attempt += 1
+                continue
+            except Exception:
+                # Non-alert exceptions propagate immediately (caller decides handling)
+                raise
+        if last_exc:
+            raise last_exc
 
     def check_page_is_loaded(self, max_time=60, auto_dismiss_alert=True):
         """
@@ -699,7 +777,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         Depending on the type of failure (which may not be detected), calling page_source may return the page_source
         from url_1 even after driver.get(url_2) is called.
         """
-        self.driver.get('data:,')
+        self.safe_action(lambda: self.driver.get('data:,'))
         self.last_scraped_url = self.driver.current_url
 
     def check_for_404(self, stop_if_in_title='default'):
@@ -945,52 +1023,54 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         """
         Scroll down page until it is fully loaded. Returns top of window at end.
         """
+        def _scroll_down_page_to_load():
+            def _scroll_to_top():
+                try:
+                    self.driver.execute_script("window.scrollTo(0, 0);")
+                except JavascriptException:
+                    # Apparently no window.scrollTo?
+                    action = ActionChains(self.driver)
+                    action.send_keys(Keys.HOME)
+                    action.perform()
 
-        def _scroll_to_top():
-            try:
-                self.driver.execute_script("window.scrollTo(0, 0);")
-            except JavascriptException:
-                # Apparently no window.scrollTo?
-                action = ActionChains(self.driver)
-                action.send_keys(Keys.HOME)
-                action.perform()
+            start_time = time.time()
+            last_bottom = self.driver.execute_script('return window.scrollY')
+            action = None
+            while True:
+                if max_time is not None:
+                    if time.time() - start_time > max_time:
+                        # Stop if max_time exceeded
+                        _scroll_to_top()
+                        return last_bottom
 
-        start_time = time.time()
-        last_bottom = self.driver.execute_script('return window.scrollY')
-        action = None
-        while True:
-            if max_time is not None:
-                if time.time() - start_time > max_time:
-                    # Stop if max_time exceeded
+                # Scroll down
+                try:
+                    self.driver.execute_script("window.scrollTo(0, window.scrollY + window.innerHeight);")
+                except JavascriptException:
+                    # Apparently no window.scrollTo?
+                    action = ActionChains(self.driver)
+                    action.send_keys(Keys.PAGE_DOWN)
+                    action.perform()
+
+                # Wait for anything to load
+                try:
+                    WebDriverWait(self.driver, max_time if max_time else None).until(
+                        lambda driver: driver.execute_script('return document.readyState') == 'complete')
+                except TimeoutException:
+                    # Stop if timeout
                     _scroll_to_top()
                     return last_bottom
 
-            # Scroll down
-            try:
-                self.driver.execute_script("window.scrollTo(0, window.scrollY + window.innerHeight);")
-            except JavascriptException:
-                # Apparently no window.scrollTo?
-                action = ActionChains(self.driver)
-                action.send_keys(Keys.PAGE_DOWN)
-                action.perform()
+                current_bottom = self.driver.execute_script('return window.scrollY')
+                if last_bottom == current_bottom:
+                    # We've reached the bottom of the page
+                    _scroll_to_top()
+                    return current_bottom
 
-            # Wait for anything to load
-            try:
-                WebDriverWait(self.driver, max_time if max_time else None).until(
-                    lambda driver: driver.execute_script('return document.readyState') == 'complete')
-            except TimeoutException:
-                # Stop if timeout
-                _scroll_to_top()
-                return last_bottom
-
-            current_bottom = self.driver.execute_script('return window.scrollY')
-            if last_bottom == current_bottom:
-                # We've reached the bottom of the page
-                _scroll_to_top()
-                return current_bottom
-
-            last_bottom = current_bottom
-            time.sleep(.2)
+                last_bottom = current_bottom
+                time.sleep(.2)
+        
+        return self.safe_action(_scroll_down_page_to_load)
 
     def kill_browser(self):
         try:
@@ -1202,6 +1282,18 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
             "default": False,
             "help": "Use virtual display (Xvfb) if available",
             "tooltip": "Use virtual display (Xvfb) if available; otherwise, headless mode is used",
+        },
+        "selenium.reduce_dialog_prefs": {
+            "type": UserInput.OPTION_TOGGLE,
+            "default": False,
+            "help": "Apply Firefox prefs to suppress notification / push / beforeunload dialogs",
+            "tooltip": "Disable to mimic a more default browser profile if detection is suspected.",
+        },
+        "selenium.unhandled_prompt_behavior": {
+            "type": UserInput.OPTION_TEXT,
+            "default": "dismiss",
+            "help": "Unhandled JS dialog strategy (dismiss, accept, dismiss and notify, accept and notify)",
+            "tooltip": "Internal WebDriver capability; not directly visible to page JS.",
         },
         
     }
