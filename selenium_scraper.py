@@ -777,8 +777,50 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         Depending on the type of failure (which may not be detected), calling page_source may return the page_source
         from url_1 even after driver.get(url_2) is called.
         """
-        self.safe_action(lambda: self.driver.get('data:,'))
-        self.last_scraped_url = self.driver.current_url
+        if self.browser == 'firefox':
+            primary_url = "about:blank"
+            fallback_url = "data:,"
+        else:
+            raise NotImplementedError("Currently only Firefox is supported")
+
+        # Attempt to abort any hanging network activity first; ignore failures.
+        try:
+            self.driver.execute_script("window.stop();")
+        except Exception:
+            pass
+
+        def _navigate(url):
+            return self.safe_action(lambda: self.driver.get(url))
+
+        try:
+            _navigate(primary_url)
+        except TimeoutException as e_primary:
+            # Log & fallback to secondary reset URL
+            try:
+                if self.selenium_log:
+                    self.selenium_log.warning(f"Timeout navigating to {primary_url} during reset: {e_primary}; trying fallback {fallback_url}")
+                _navigate(fallback_url)
+            except TimeoutException as e_fallback:
+                # Escalate: restart selenium; this indicates a likely hung browser
+                if self.selenium_log:
+                    self.selenium_log.error(f"Fallback reset navigation also timed out ({fallback_url}): {e_fallback}; restarting browser session")
+                try:
+                    self.restart_selenium()
+                except Exception as restart_err:
+                    if self.selenium_log:
+                        self.selenium_log.error(f"Failed to restart Selenium after reset failure: {restart_err}")
+                    raise
+                
+                # After restart, attempt once more (primary only) but swallow errors to avoid cascading failures
+                try:
+                    _navigate(primary_url)
+                except Exception:
+                    pass
+        finally:
+            try:
+                self.last_scraped_url = self.driver.current_url
+            except Exception:
+                self.last_scraped_url = None
 
     def check_for_404(self, stop_if_in_title='default'):
         """
