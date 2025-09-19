@@ -298,9 +298,19 @@ class SearchAwsStore(SeleniumSearch):
         app_url = title_block.find_element(By.TAG_NAME, "a").get_attribute("href")
         app_id = app_url.split("prodview-")[1].split("?")[0]
         # vendor
-        vendor_block = result_element.find_element(By.XPATH, './/a[@data-semantic="vendorNameLink"]')
-        vendor_name = vendor_block.text
-        vendor_url = vendor_block.get_attribute("href")
+        try:
+            vendor_block = result_element.find_element(By.XPATH, './/a[@data-semantic="vendorNameLink"]')
+            vendor_name = vendor_block.text
+            vendor_url = vendor_block.get_attribute("href")
+        except selenium_exceptions.NoSuchElementException:
+            # vendor not linked
+            try:
+                vendor_block = result_element.find_element(By.XPATH, './/span[@data-semantic="vendorNameLink"]')
+                vendor_name = vendor_block.text
+                vendor_url = None
+            except selenium_exceptions.NoSuchElementException:
+                vendor_name = None
+                vendor_url = None
         # pricing
         try:
             badge = result_element.find_element(By.XPATH, './/span[@data-semantic="badge-text"]').text
