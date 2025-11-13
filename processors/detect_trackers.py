@@ -1,12 +1,9 @@
 """
 Search HTML for scripts in matching tracking tools
 """
-import shutil
 import csv
 import json
 import re
-import requests
-import subprocess
 import sys
 from datetime import datetime
 from multiprocessing import Pool
@@ -15,6 +12,10 @@ from backend.lib.processor import BasicProcessor
 from backend.lib.worker import BasicWorker
 from common.lib.exceptions import WorkerInterruptedException
 from common.lib.helpers import UserInput
+from .install_ghostery import (
+    install_or_update_ghostery,
+    read_update_marker,
+)
 
 
 __author__ = "Dale Wahl"
@@ -75,24 +76,26 @@ class DetectTrackers(BasicProcessor):
 
         :param module: Dataset or processor to determine compatibility with
         """
-        trackerdb_file = config.get("PATH_ROOT").joinpath("config/ghostery/dist/trackerdb.json")
+        trackerdb_file = config.get("PATH_CONFIG").joinpath("ghostery/dist/trackerdb.json")
         return trackerdb_file.exists() and module.get_extension() in ["csv", "ndjson"]
 
     @classmethod
     def get_options(cls, parent_dataset=None, config=None):
-        options = {
-            "ghostery_updated": {
+        options = {}
+        if config.get("cache.ghostery.db_updated_at", False):
+            options["ghostery_updated"] = {
                 "type": UserInput.OPTION_INFO,
                 "help": "Ghostery tracker database last updated at: %s" % datetime.fromtimestamp(
                     config.get("cache.ghostery.db_updated_at", 0)
                 ).strftime("%Y-%m-%d %H:%M:%S") if config.get("cache.ghostery.db_updated_at", 0) > 0 else "Never",
-            },
-            "column": {
+            }
+            
+        options["column"] = {
                 "type": UserInput.OPTION_CHOICE,
                 "default": "html",
                 "help": "Dataset column containing HTML"
             }
-        }
+
         if not parent_dataset:
             return options
         parent_columns = parent_dataset.get_columns()
@@ -116,7 +119,7 @@ class DetectTrackers(BasicProcessor):
         column = self.parameters.get("column", "")
 
         self.dataset.update_status('Loading trackers...')
-        trackerdb_file = self.config.get("PATH_ROOT").joinpath("config/ghostery/dist/trackerdb.json")
+        trackerdb_file = self.config.get("PATH_CONFIG").joinpath("ghostery/dist/trackerdb.json")
         if not trackerdb_file.exists():
             self.dataset.finish_with_error("Ghostery tracker database not found. Please run the Ghostery data updater first.")
             return
@@ -288,8 +291,7 @@ class GhosteryDataUpdater(BasicWorker):
     """
     type = "ghostery-data-collector"  # job ID
 
-    repo_url = "https://github.com/ghostery/trackerdb.git"
-    repo_latest_release = "https://api.github.com/repos/ghostery/trackerdb/releases/latest"
+    # Installer module owns repo URLs; no need to duplicate here
 
     config = {
         "cache.ghostery.db_updated_at": {
@@ -320,121 +322,50 @@ class GhosteryDataUpdater(BasicWorker):
         """
         Ensure job is scheduled to run every day
         """
-        # Run every day to update categories
-        # This should default to True, but can be disabled by user
-        # NOTE: we do not have a method to auto-disable the job once scheduled (but check in work())
-        if config.get("ghostery.auto_update", True):
-            if sys.platform == "linux":
-                # Only queue job if system is linux
-                return {"remote_id": "ghostery-data-collector", "interval": 86400}
-        return None
+        # Run every day to update categories        
+        return {"remote_id": "ghostery-data-collector", "interval": 86400}
+      
 
-    def ensure_node_installed(self):
-        if shutil.which("node") and shutil.which("npm"):
-            return True # Node.js and npm are installed
-        
-        # Check we are in linux environment
-        if sys.platform != "linux":
-            raise ValueError("This installation is only for Linux OS")
-        
-        # Install Node.js and npm
-        result = subprocess.run(["apt", "update"], capture_output=True)
-        if result.returncode != 0:
-            raise ValueError("Error updating apt")
-        result = subprocess.run(["apt", "install", "-y", "nodejs", "npm"], capture_output=True)
-        if result.returncode != 0:
-            raise ValueError("Error installing Node.js and npm")
-        
-        return True
-    
-    def build_tracker_db(self, ghostery_repo, trackerdb_file):
-        # Clone Ghostery tracker database
-        try:
-            self.ensure_node_installed()
-        except ValueError as e:
-            self.log.warning(e)
-            return False
-        
-        # Build Ghostery tracker database dependencies
-        result = subprocess.run(["npm", "install"], capture_output=True, cwd=ghostery_repo)
-        if result.returncode != 0:
-            self.log.warning(f"Error installing Ghostery tracker database with npm: {result.stderr.decode().strip()}")
-            return False
-        
-        # Create trackerdb.json file
-        result = subprocess.run(["node", "scripts/export-json/index.js"], capture_output=True, cwd=ghostery_repo)
-        if result.returncode != 0:
-            self.log.error(f"Error building Ghostery tracker database with node: {result.stderr.decode().strip()}")
-            return False
-
-        # Check trackerdb.json file exists
-        if not trackerdb_file.exists():
-            self.log.error("trackerdb.json file not found")
-            return False
-        
-        return True
-
-    def get_latest_release(self):
-        """Fetch the latest release version from GitHub API."""
-        response = requests.get(self.repo_latest_release)
-        
-        if response.status_code == 200:
-            data = response.json()
-            return data.get("tag_name")
-        else:
-            self.log.error(f"Ghoserty DB Update Error fetching release: {response.status_code} - {response.text}")
-            return None
-        
     def work(self):
-        if not self.config.get("ghostery.auto_update"):
-                # Not enabled, skip update (job may not have been removed from scheduler)
-                return
-        
-        ghostery_repo = self.config.get("PATH_ROOT").joinpath("config/ghostery")
-        trackerdb_file = ghostery_repo.joinpath("dist/trackerdb.json")
+        path_config = self.config.get("PATH_CONFIG")
+        path_ghostery = path_config.joinpath("ghostery")
+        auto_update = self.config.get("ghostery.auto_update", False)
 
-        success = None
-        latest_release = None
-        if not ghostery_repo.exists():
-            self.log.info("Cloning Ghostery tracker database and installing")
-            # First time running, clone the repository
-            latest_release = self.get_latest_release()
-            result = subprocess.run(["git", "clone", self.repo_url, ghostery_repo])
-            if result.returncode != 0:
-                self.log.error("Error cloning Ghostery tracker database")
-                return
-            
-            # Build the database
-            success = self.build_tracker_db(ghostery_repo, trackerdb_file)
-        else:
-            # Check if update is needed
-            latest_release = self.get_latest_release()
-            if not latest_release:
-                return
-            
-            current_release = self.config.get("cache.ghostery.current_release")
-            
-            if current_release != latest_release:
-                self.log.info(f"Updating Ghostery tracker database from {current_release} to {latest_release}")
-                # Update the repository
-                result = subprocess.run(["git", "pull"], cwd=ghostery_repo)
-                if result.returncode != 0:
-                    self.log.error("Error updating Ghostery tracker database")
-                    return
-                
-                # Build the database
-                success = self.build_tracker_db(ghostery_repo=ghostery_repo, trackerdb_file=trackerdb_file)
+        # Read last update marker to avoid unnecessary rebuilds
+        marker = read_update_marker(path_config, logger=self.log)
+        current_release = marker.get("latest_release") if marker else None
+
+        result = install_or_update_ghostery(
+            path_ghostery,
+            auto_update=auto_update,
+            current_release=current_release,
+            logger=self.log,
+            platform_name=sys.platform,
+        )
+
+        # Installer wrote marker; update 4CAT config + messaging here
+        if result.status in ("installed", "updated", "up-to-date"):
+            if result.latest_release:
+                self.config.set("cache.ghostery.current_release", result.latest_release)
+                self.config.set("cache.ghostery.db_updated_at", datetime.now().timestamp())
+            if result.status == "up-to-date":
+                self.log.info("Ghostery tracker database is already up to date.")
             else:
-                # No update needed
-                pass
-
-        if success:
-            self.config.set("cache.ghostery.current_release", latest_release)
-            self.config.set("cache.ghostery.db_updated_at", datetime.now().timestamp())
-            self.log.info("Ghostery tracker database updated successfully")
-        elif success is False:
-            self.log.error("Ghostery unable to auto update. Please download Ghostery tracker database manually.\nInstructions available at https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions/blob/main/processors/README.md")
+                self.log.info(f"Ghostery tracker database {result.status}.")
+        elif result.status == "failed":
+            self.log.error(
+                f"Ghostery auto-update failed: {result.error or 'unknown error'}.\n"
+                "Please run the installer manually with sufficient permissions.\n"
+                "Docs: https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions/blob/main/processors/README.md"
+            )
+            # Disable further auto-updates to prevent repeated failures; worker stays scheduled to notify on new releases
             self.config.set("ghostery.auto_update", False)
-        elif success is None:
-            # No update needed
-            pass
+        elif result.status == "skipped-auto-update-disabled":
+            # Auto-update disabled and a newer release exists. Notify user to run manual installer.
+            if result.latest_release and result.latest_release != self.config.get("cache.ghostery.current_release"):
+                self.log.info(
+                    f"New Ghostery release available ({result.latest_release}). Auto-update is disabled; "
+                    "please run the installer manually to update."
+                )
+        elif result.status == "release-unknown":
+            self.log.warning("Could not determine latest Ghostery release; will try again on next run.")
