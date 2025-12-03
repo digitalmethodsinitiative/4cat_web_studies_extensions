@@ -270,8 +270,8 @@ class SearchAzureStore(Search):
         results = soup.find_all(attrs={"class": "tileContainer"})
 
         return [{
-            "title": soup.find("div", attrs={"class": "tileContent"}).get_text(),
-            "href": soup.find("a").get("href"),
+            "title": soup.find(attrs={"class": "title"}).get_text(),
+            "href": soup.get("href"),
             "rank": i+previous_results,
             "source": str(soup),
             } for i, soup in enumerate(results, start=1)]
