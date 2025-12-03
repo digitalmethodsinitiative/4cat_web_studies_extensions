@@ -267,7 +267,7 @@ class SearchAzureStore(Search):
             raise ProcessorException(f"Failed to fetch data from Azure Store: {response.status_code} {response.reason}")
 
         soup = BeautifulSoup(response.content, "html.parser")
-        results = soup.find_all("div", attrs={"class": "spza_tileWrapper"})
+        results = soup.find_all(attrs={"class": "tileContainer"})
 
         return [{
             "title": soup.find("div", attrs={"class": "tileContent"}).get_text(),
@@ -301,6 +301,17 @@ class SearchAzureStore(Search):
         :param item:
         :return:
         """
+        collected_at = datetime.datetime.fromtimestamp(item.get("4CAT_metadata", {}).get("collected_at_timestamp", ""))
+        if type(collected_at) is int:
+            collected_at = datetime.datetime.fromtimestamp(collected_at)
+            collected_at.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            try:
+                collected_at = collected_at.strftime("%Y-%m-%d %H:%M:%S")
+                collected_at.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                collected_at = str(collected_at)
+        
         # Map expected detail groups and tabs
         tab_groups = [
             "overview",
@@ -321,7 +332,7 @@ class SearchAzureStore(Search):
             "query": item.get("4CAT_metadata", {}).get("query", ""),
             "category": item.get("4CAT_metadata", {}).get("category", ""),
             "sub_category": item.get("4CAT_metadata", {}).get("sub_category", ""),
-            "collected_at": datetime.datetime.fromtimestamp(item.get("4CAT_metadata", {}).get("collected_at_timestamp", "")).strftime("%Y-%m-%d %H:%M:%S"),
+            "collected_at": collected_at,
             "rank": item.get("rank"),
             "title": item.get("title", ""),
             "developer_name": item.get("developer_name", ""),
