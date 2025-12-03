@@ -219,10 +219,10 @@ class SearchAwsStore(SeleniumSearch):
                                 text_results = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, '//span[@data-test-selector="availableProductsCountMessage"]')))
                                 text_results = text_results.text.lstrip('(').rstrip(" results)")
                                 try:
-                                    num_results = int(text_results.replace("Over ", ""))
+                                    num_results = int(text_results.replace("Over ", "").replace(",", ""))
                                 except ValueError:
                                     num_results = None
-                                    self.log.warning(f"{self.type} could not parse number of results: {text_results}")
+                                    self.log.warning(f"{self.type} ({self.dataset.key}) could not parse number of results: {text_results}")
                                 if num_results == 0:
                                     self.dataset.log(f"No results found{', continuing...' if tried_queries < (total_queries - 1) else ''}")
                                     continue
