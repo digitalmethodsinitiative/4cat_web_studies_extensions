@@ -395,16 +395,20 @@ class AzureCategories(BasicWorker):
         if json_data:
             category_map = {}
             # we need both the main and sub categories keys
-            for cat_key, cat in json_data.get("apps").get("dataMap").get("category").items():
-                main_key = cat.get("urlKey")
-                cat_title = cat.get("title")
-                sub_cats = cat.get("subCategoryDataMapping")
-                for sub_key, sub_cat in sub_cats.items():
-                    sub_title = sub_cat.get("title")
-                    sub_key = sub_cat.get("urlKey")
-                    # We only pass the key to the backend; so make a unique key that can be parsed (otherwise we could re-request)
-                    category_map[main_key + "_--_" + sub_key] = {"cat_key": main_key, "cat_title": cat_title,
-                                                                 "sub_key": sub_key, "sub_title": sub_title}
-        self.config.set("cache.azure.categories", category_map)
-        self.config.set("cache.azure.categories_updated_at", datetime.datetime.now().timestamp())
-        self.log.info(f"Collected category options ({len(category_map)}) from Azure Store")
+            for _, group_type in json_data.get("apps").get("dataMap").get("categories").items():
+                # added layer of cat types
+                for cat_key, cat in group_type.items():
+                    main_key = cat.get("UrlKey")
+                    cat_title = cat.get("LongTitle")
+                    sub_cats = cat.get("SubCategoryDataMapping")
+                    if not main_key or not cat_title:
+                        continue
+                    for sub_key, sub_cat in sub_cats.items():
+                        sub_title = sub_cat.get("LongTitle")
+                        sub_key = sub_cat.get("UrlKey")
+                        category_map[main_key + "_" + sub_key] = {"cat_key": main_key, "cat_title": cat_title, "sub_key": sub_key, "sub_title": sub_title}        
+            self.config.set("cache.azure.categories", category_map)
+            self.config.set("cache.azure.categories_updated_at", datetime.datetime.now().timestamp())
+            self.log.info(f"Collected category options ({len(category_map)}) from Azure Store")
+        else:
+            self.log.error(f"Failed to parse categories from Azure Store JSON (retrying in {self.job_interval})")
