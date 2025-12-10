@@ -150,7 +150,7 @@ class SearchAzureStore(Search):
                         result = self.get_app_details(result)
 
                     result["id"] = url_to_hash(self.base_url + result.get("href")) # use URL as unique ID
-                    result["4CAT_metadata"] = {"query": query, "category": main_category if main_category is not None else "all", "sub_category": sub_category, "page": page, "collected_at_timestamp": datetime.datetime.now().timestamp()}
+                    result["4CAT_metadata"] = {"query": query, "category": main_category if main_category is not None else "all", "sub_category": sub_category, "page": page, "full_details_collected": full_details, "collected_at_timestamp": datetime.datetime.now().timestamp()}
                     yield result
                     count += 1
                     query_results += 1
@@ -180,68 +180,55 @@ class SearchAzureStore(Search):
             return app
 
         soup = BeautifulSoup(response.content, "html.parser")
-        # Update with more detailed source
-        app["source"] = str(soup)
-
         # General content
+        # ID
+        id_block = soup.find_all(attrs={"data-bi-name":True})
+        app["item_id"] = id_block[0].get("data-bi-name") if id_block else None
+        
         # Title block
-        title_block = soup.find("div", attrs={"class": "appDetailHeader"})
+        title_block = soup.find("div", attrs={"class": "titleBlock"})
         app["full_title"] = title_block.find("h1").get_text()
         app["developer_name"] = title_block.find("h2").get_text()
+        
+        # Icon (there is a JSON we might be interested in extracting)
+        icon_block = str(soup).split("\"iconURL\":\"")
+        if not icon_block:
+            app["icon_link"] = ""
+        else:
+            app["icon_link"] = icon_block[1].split("\"")[0]
 
-        # Details block
-        details_block = soup.find("div", attrs={"class": "imageDetailsContainer"})
-        regex = re.compile('.*appLargeIcon.*')
-        app["icon_link"] = details_block.find("div", attrs={"class": regex}).get_text()
-        detail_categories = {}
-        for header in details_block.find_all("header"):
-            header_group = header.parent
-            detail_categories[header.get_text().lower()] = [{"text": cat.get_text(), "href": cat.get("href")}
-                                                    for cat in header_group.find_all("a")]
-        app["details"] = detail_categories
+        # Metadata
+        metadata = {}
+        for metadata_item in soup.find_all("meta"):
+            metadata[metadata_item.get("itemprop")] = metadata_item.get("content")
+        
+        app["rating"] = metadata.get("ratingValue")
+        app["review_count"] = metadata.get("reviewCount")
+        
+         # Badges
+        badges_block = soup.find("div", attrs={"class": "ms-Stack-inner"})
+        app["badges"] = []
+        for block in badges_block.find_all("a"):
+            app["badges"].append({
+                "name": block.get("title"),
+                "link": block.get("href"),
+            })
+        
+        # Overview
+        selected_tab = soup.find(attrs={"class": "tabSelected"}).get_text().lower()
+        if selected_tab != "overview":
+            raise ProcessorException(f"Unexpected selected tab when fetching app details from Azure Store: {selected_tab}")
+        tab_content = soup.find_all("div", attrs={"class": "tabContent"})
+        app["overview"] = tab_content[0].get_text(separator="\n") if tab_content else ""
+        
+        app ["metadata"] = metadata
 
-        # App tabs
-        app["tabs"] = self.collect_additional_tabs(soup, app_title=app.get("title"))
-
+        json_data = self.parse_azure_json(soup)
+        app_position = json_data.get("apps").get("idMap").get(app["item_id"])
+    
+        app["json_data"] = json_data.get("apps").get("dataList")[app_position] if (json_data and app_position is not None) else {}
+        
         return app
-
-    def collect_additional_tabs(self, soup, app_title=None):
-        """
-        There are tabs beyond "Overview" that contain additional information.
-
-        It appears these mostly do not load in normal HTML, so we will need to be clever...
-        """
-        #TODO become clever
-        # There are additional tabs to be collected
-        app_tabs = {}
-        regex = re.compile('.*defaultTab.*')
-        tabs = soup.find_all("a", attrs={"class": regex})
-        for tab in tabs:
-            tab_label = tab.find("label").get_text().lower()
-            if tab.get("aria-selected") == "true":
-                # Current tab
-                tab_content = soup.find("div", attrs={"class": "tabContent"})
-            else:
-                # Request other tab
-                try:
-                    tab_request = requests.get(self.base_url + tab.get("href"), timeout=30)
-                except requests.exceptions.RequestException as e:
-                    self.dataset.log(
-                        f"Failed to fetch additional tab {tab_label} for app {app_title} from Azure Store: {e}")
-                    continue
-                if tab_request.status_code != 200:
-                    self.dataset.log(
-                        f"Failed to fetch additional tab {tab_label} for app {app_title} from Azure Store: {tab_request.status_code} {tab_request.reason}")
-                    continue
-                tab_soup = BeautifulSoup(tab_request.content, "html.parser")
-                tab_content = tab_soup.find("div", attrs={"class": "tabContent"})
-
-            app_tabs[tab_label] = {
-                "text": tab_content.get_text(separator="\n"),
-                "source": str(tab_content)
-            }
-
-        return app_tabs
 
     def get_query_results(self, query, category=None, sub_category=None, previous_results=0, page=1, store="en-us"):
         """
@@ -312,23 +299,8 @@ class SearchAzureStore(Search):
             except Exception:
                 collected_at = str(collected_at)
         
-        # Map expected detail groups and tabs
-        tab_groups = [
-            "overview",
-            "plans",
-            "ratings + reviews",
-        ]
-        additional_tabs = [{tab_label: tab.get('text')} for tab_label, tab in item.get("tabs", {}).items() if tab_label.lower() not in tab_groups]
-        detail_groups = [
-            "pricing information",
-            "categories",
-            "support",
-            "legal",
-        ]
-        additional_details = [{detail_label: detail.get("text")} for detail_label, detail in item.get("details", {}).items() if detail_label.lower() not in detail_groups]
-
         formatted_item = {
-            "id": item.get("id"),
+            "id": item.get("item_id"),
             "query": item.get("4CAT_metadata", {}).get("query", ""),
             "category": item.get("4CAT_metadata", {}).get("category", ""),
             "sub_category": item.get("4CAT_metadata", {}).get("sub_category", ""),
@@ -338,17 +310,22 @@ class SearchAzureStore(Search):
             "developer_name": item.get("developer_name", ""),
             "icon_link": item.get("icon_link", ""),
             "url": SearchAzureStore.base_url + item.get("href", ""),
+            "full_details_collected": item.get("4CAT_metadata", {}).get("full_details_collected", False),
             "full_title": item.get("full_title", ""),
-            "pricing_information": ", ".join([detail.get("text") for detail in item.get("details", {}).get("pricing information", [])]),
-            "categories": ", ".join([detail.get("text") for detail in item.get("details", {}).get("categories", [])]),
-            "support": ", ".join([detail.get("text") + f": {detail.get('href')}" for detail in item.get("details", {}).get("support", [])]),
-            "legal": ", ".join([detail.get("text") + f": {detail.get('href')}" for detail in item.get("details", {}).get("legal", [])]),
-            "overview": item.get("tabs", {}).get("overview", {}).get("text", ""),
-            "plans": item.get("tabs", {}).get("plans", {}).get("text", ""),
-            "ratings_reviews": item.get("tabs", {}).get("ratings + reviews", {}).get("text", ""),
-            "details": additional_details,
-            "additional_tabs": additional_tabs,
-            "body": item.get("tabs", {}).get("overview", {}).get("text", ""),
+            "overview": item.get("overview"),
+            "rating": item.get("rating", ""),
+            "review_count": item.get("review_count", ""),
+            "badges": ", ".join([badge.get("name") for badge in item.get("badges", [])]),
+
+            # pricing info KEY appears in app json, but need to parse larger json for details
+            # "pricing_information": ", ".join([detail.get("text") for detail in item.get("details", {}).get("pricing information", [])]),
+            "categories": ", ".join([cat.get("longTitle") for cat in item.get("json_data", {}).get("categoriesDetails", []) if cat.get("longTitle")]),
+            "support": item.get("json_data", {}).get("detailInformation", {}).get('SupportLink'),
+            "privacy_policy": item.get("json_data", {}).get("detailInformation", {}).get('PrivacyPolicyUrl'),
+            "license_terms": item.get("json_data", {}).get("licenseTermsUrl"),
+            
+            # 4CAT standard fields
+            "body": item.get("overview"),
             "timestamp": int(item.get("4CAT_metadata", {}).get("collected_at_timestamp")),
         }
 
@@ -362,7 +339,9 @@ class SearchAzureStore(Search):
         # JSON object is stored in a script tag
         scripts = soup.find_all("script")
         for script in scripts:
-            if "window.__INITIAL_STATE__" in str(script):
+            if "window.__INITIAL_STATE__ = " in str(script):
+                return json.loads(str(script).split("window.__INITIAL_STATE__ =")[1].rstrip("</script>").strip())
+            elif "window.__INITIAL_STATE__=" in str(script):
                 return json.loads(str(script).split("window.__INITIAL_STATE__ =")[1].rstrip("</script>").strip())
         return None
 
