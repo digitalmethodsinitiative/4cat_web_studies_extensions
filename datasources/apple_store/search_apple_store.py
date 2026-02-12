@@ -49,6 +49,7 @@ class SearchAppleStore(Search):
             'query-developer-detail': 'developer',
             'query-similar-detail': 'similar',
             'query-permissions': 'permissions',
+            'reviews': 'reviews', # Google API only, not currently available for Apple Store
         }
 
     @classmethod
