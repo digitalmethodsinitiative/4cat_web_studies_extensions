@@ -397,6 +397,9 @@ class SearchGoogleStore(SearchAppleStore):
                     "version": item.get("version"),
                     "icon_link": item.get("icon"),
                     "header_link": item.get("headerImage"),
+                    "video_link": item.get("video"),
+                    "video_thumb": item.get("videoImage"),
+                    "video_preview_link": item.get("previewVideo"),
                     "screenshots": ", ".join(item.get("screenshots", [])),
                     }
                 timestamp = item.get("updated") or item.get("released") or item.get("collected_at_timestamp")
