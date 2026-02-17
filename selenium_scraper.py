@@ -1341,24 +1341,14 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
     }
 
     @classmethod
-    def check_worker_available(cls, manager, modules):
+    def get_queue_id(cls, manager, modules):
         """
         Check if the worker can run. Here we check if there are too many
         workers of this type running already.
 
         :return bool:  True if the worker can run, False if not
         """
-        # check if we have too many workers of this type running
-        selenium_workers = 0
-        for worker_type, workers in manager.worker_pool.items():
-            worker_class = modules.workers[worker_type]
-            if issubclass(worker_class, SeleniumSearch):
-                selenium_workers += len(workers)
-
-        if selenium_workers < cls.max_workers:
-            return True
-        else:
-            return False
+        return "selenium_worker"
 
     def search(self, query):
         """
