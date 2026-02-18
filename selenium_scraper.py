@@ -1340,16 +1340,6 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
         
     }
 
-    @classmethod
-    def get_queue_id(cls, manager, modules):
-        """
-        Check if the worker can run. Here we check if there are too many
-        workers of this type running already.
-
-        :return bool:  True if the worker can run, False if not
-        """
-        return "selenium_worker"
-
     def search(self, query):
         """
         Search for items matching the given query
