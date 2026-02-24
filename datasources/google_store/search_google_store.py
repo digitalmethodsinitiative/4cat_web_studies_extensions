@@ -280,7 +280,7 @@ class SearchGoogleStore(SearchAppleStore):
                     self.dataset.log(f"Failed queries: {failed_queries}")
                 if no_results_queries:
                     self.dataset.log(f"No results queries: {no_results_queries}")
-                self.dataset.update_status(f"Completed {num_queries} queries and collected {num_results_collected} results w/ issues; see log for details", is_final=True)
+                self.dataset.update_status(f"Completed {num_queries} queries and collected {num_results_collected} results w/ {len(failed_queries) + len(no_results_queries)} issues; see log for details", is_final=True)
             else:
                 self.dataset.update_status(f"Completed {num_queries} queries successfully with {num_results_collected} total results", is_final=True)
         else:
