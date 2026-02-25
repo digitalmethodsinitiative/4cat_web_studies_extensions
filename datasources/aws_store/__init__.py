@@ -1,5 +1,5 @@
 """
-Initialize Amazon's Azure App Store data source
+Initialize Amazon Web Services (AWS) Marketplace data source
 """
 
 # An init_datasource function is expected to be available to initialize this
@@ -9,4 +9,4 @@ from common.lib.helpers import init_datasource
 
 # Internal identifier for this data source
 DATASOURCE = "aws-store"
-NAME = " Amazon Web Services (AWS) Marketplace"
+NAME = "Amazon Web Services (AWS) Marketplace"

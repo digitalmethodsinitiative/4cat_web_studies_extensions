@@ -320,8 +320,20 @@ class SearchAwsStore(SeleniumSearch):
             pricing = result_element.find_element(By.XPATH, './/div[@data-semantic="pricing"]').text
         except selenium_exceptions.NoSuchElementException:
             pricing = None
+
+        # 2026-2-25 AWS updated their UI and added a new "AI listing highlights" section which often in place of the description itself
         # description
-        search_description = result_element.find_element(By.XPATH, './/p[@data-semantic="desc"]').text
+        try:
+            search_description = result_element.find_element(By.XPATH, './/p[@data-semantic="desc"]').text
+        except selenium_exceptions.NoSuchElementException:
+            search_description = None
+
+        # ai highlights
+        try:
+            ai_listing_highlights = result_element.find_element(By.XPATH, './/div[@data-semantic="ai-listing-highlights"]').text
+        except selenium_exceptions.NoSuchElementException:
+            ai_listing_highlights = None
+
         return {
             "app_id": app_id,
             "title": title,
@@ -332,6 +344,7 @@ class SearchAwsStore(SeleniumSearch):
             "pricing": pricing,
             "search_description": search_description,
             "thumbnail": thumbnail,
+            "ai_listing_highlights": ai_listing_highlights,
             "html_source": result_element.get_attribute("outerHTML"),
         }
 
@@ -365,7 +378,7 @@ class SearchAwsStore(SeleniumSearch):
         if not next_page:
             return False
         driver.execute_script("arguments[0].scrollIntoView(true);", next_page[0])
-        self.destroy_to_click(next_page[0])
+        self.smart_click(next_page[0])
         return True
 
     @staticmethod
@@ -373,10 +386,10 @@ class SearchAwsStore(SeleniumSearch):
         """
         Map item to a standard format
         """
-        item["body"] = item["search_description"]
         fourcat_metadata = item.pop("4CAT_metadata", {})
         # Remove HTML source
         item.pop("html_source")
+        best_text = item.get("search_description") or item.get("ai_listing_highlights") or ""
         return MappedItem({
             "query": fourcat_metadata.get("query", ""),
             "category": fourcat_metadata.get("category") if fourcat_metadata.get("category") else "all",
@@ -386,6 +399,7 @@ class SearchAwsStore(SeleniumSearch):
             "page": fourcat_metadata.get("page", ""),
             "rank": fourcat_metadata.get("rank", ""),
             "timestamp": int(fourcat_metadata.get("collected_at_timestamp")),
+            "body": best_text,
             **item
         })
 
