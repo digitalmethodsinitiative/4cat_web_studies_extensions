@@ -65,6 +65,27 @@ class AmazonProductSearch(SeleniumSearch):
     }
 
     @classmethod
+    def get_queue_id(cls, remote_id, details, dataset) -> str:
+        """
+        Get queue ID for this worker
+
+        The queue ID determines what other worker types are considered to see
+        if a job of this worker can run. By default it is set to the worker's
+        type (so all workers of the same type are in the same queue) but this
+        can be overridden by subclasses.
+
+        :param str remote_id:  Item reference for the job, e.g. a dataset key
+          or URL
+        :param dict details:  Job details
+        :param DataSet dataset:  Dataset object; if the worker does not work
+          with a dataset (e.g. if it is a processor) this is `None`.
+
+	    :return str:  Queue ID
+	    """
+        # Seperate queue for this worker to avoid blocking other selenium jobs; this is a very long running worker.
+        return "selenium_long_running"
+
+    @classmethod
     def get_options(cls, parent_dataset=None, config=None):
         options = {
             "intro-1": {
