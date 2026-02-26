@@ -57,7 +57,7 @@ class SearchAzureStore(SeleniumSearch):
         options = {
             "intro-1": {
                 "type": UserInput.OPTION_INFO,
-                "help": ("This data source allows you to query [Microsoft's Azure app store](https://azuremarketplace.microsoft.com) to retrieve data on applications and developers."
+                "help": (f"This data source allows you to query [Microsoft's Azure app store]({cls.base_url}) to retrieve data on applications and developers."
                          )
             },
             "amount": {
@@ -200,12 +200,14 @@ class SearchAzureStore(SeleniumSearch):
         
         # Title block
         title_block = soup.find("div", attrs={"class": "titleBlock"})
-        app["full_title"] = title_block.find("h1").get_text()
-        app["developer_name"] = title_block.find("h2").get_text()
+        title_h1 = title_block.find("h1") if title_block else None
+        title_h2 = title_block.find("h2") if title_block else None
+        app["full_title"] = title_h1.get_text(strip=True) if title_h1 else app.get("title", "")
+        app["developer_name"] = title_h2.get_text(strip=True) if title_h2 else app.get("publisher", "")
         
         # Icon (there is a JSON we might be interested in extracting)
         icon_block = str(soup).split("\"iconURL\":\"")
-        if not icon_block:
+        if len(icon_block) < 2:
             app["icon_link"] = ""
         else:
             app["icon_link"] = icon_block[1].split("\"")[0]
@@ -221,16 +223,18 @@ class SearchAzureStore(SeleniumSearch):
          # Badges
         badges_block = soup.find("div", attrs={"class": "ms-Stack-inner"})
         app["badges"] = []
-        for block in badges_block.find_all("a"):
-            app["badges"].append({
-                "name": block.get("title"),
-                "link": block.get("href"),
-            })
+        if badges_block:
+            for block in badges_block.find_all("a"):
+                app["badges"].append({
+                    "name": block.get("title"),
+                    "link": block.get("href"),
+                })
         
         # Overview
-        selected_tab = soup.find(attrs={"class": "tabSelected"}).get_text().lower()
-        if selected_tab != "overview":
-            raise ProcessorException(f"Unexpected selected tab when fetching app details from Azure Store: {selected_tab}")
+        selected_tab_node = soup.find(attrs={"class": "tabSelected"})
+        selected_tab = selected_tab_node.get_text(strip=True).lower() if selected_tab_node else ""
+        if selected_tab and selected_tab != "overview":
+            self.dataset.log(f"Unexpected selected tab when fetching app details from Azure Store: {selected_tab}")
         tab_content = soup.find_all("div", attrs={"class": "tabContent"})
         app["overview"] = tab_content[0].get_text(separator="\n") if tab_content else ""
         
@@ -271,13 +275,89 @@ class SearchAzureStore(SeleniumSearch):
 
         soup = BeautifulSoup(self.driver.page_source, "html.parser")
         results = soup.find_all(attrs={"class": "tileContainer"})
+        parsed_results = []
 
-        return [{
-            "title": soup.find(attrs={"class": "title"}).get_text(),
-            "href": soup.get("href"),
-            "rank": i+previous_results,
-            "source": str(soup),
-            } for i, soup in enumerate(results, start=1)]
+        def get_text_or_none(element):
+            if not element:
+                return None
+            try:
+                value = element.get_text(" ", strip=True)
+            except Exception:
+                return None
+            return value if value else None
+
+        def parse_num_ratings(review_count):
+            if not review_count:
+                return None
+
+            compact_match = re.search(r"(\d+(?:[\.,]\d+)?)\s*([kKmM])\+?", review_count)
+            if compact_match:
+                try:
+                    number = float(compact_match.group(1).replace(",", "."))
+                    multiplier = 1000 if compact_match.group(2).lower() == "k" else 1000000
+                    return int(number * multiplier)
+                except Exception:
+                    pass
+
+            plain_match = re.search(r"[\d,.]+", review_count)
+            if not plain_match:
+                return None
+
+            digits = re.sub(r"[^\d]", "", plain_match.group(0))
+            if not digits:
+                return None
+
+            try:
+                return int(digits)
+            except Exception:
+                return None
+
+        for i, tile in enumerate(results, start=1):
+            title = get_text_or_none(tile.select_one("span.title"))
+            publisher = get_text_or_none(tile.select_one("span.publisher"))
+            summary = get_text_or_none(tile.select_one("span.description"))
+
+            icon = tile.select_one(".tileIcon img[itemprop='tileImage'][src]") or tile.find("img", src=True)
+            icon_link = icon.get("src") if icon else None
+            if icon_link and icon_link.startswith("/"):
+                icon_link = urllib.parse.urljoin(self.base_url, icon_link)
+
+            rating = get_text_or_none(tile.select_one(".detailsRatingAvgNumOfStars"))
+            review_count = get_text_or_none(tile.select_one(".detailsRatingNumOfRatingText"))
+            purchase_info = get_text_or_none(tile.select_one("span[class*='startingPriceText']"))
+            if not purchase_info:
+                purchase_info = get_text_or_none(tile.select_one("button span.ms-Button-label"))
+
+            href = tile.get("href")
+            if not href:
+                marketplace_anchor = tile.find("a", href=re.compile(r"/marketplace/apps/", re.IGNORECASE))
+                href = marketplace_anchor.get("href") if marketplace_anchor else None
+            if not href:
+                first_anchor = tile.find("a", href=True)
+                href = first_anchor.get("href") if first_anchor else None
+
+            if href and href.startswith(self.base_url):
+                href = href.replace(self.base_url, "", 1)
+            elif href and href.startswith("http"):
+                parsed_href = urllib.parse.urlparse(href)
+                if self.base_url in parsed_href.netloc:
+                    href = parsed_href.path + (f"?{parsed_href.query}" if parsed_href.query else "")
+
+            parsed_results.append({
+                "title": title,
+                "href": href,
+                "publisher": publisher,
+                "summary": summary,
+                "icon_link": icon_link,
+                "rating": rating,
+                "review_count": review_count,
+                "num_ratings": parse_num_ratings(review_count),
+                "purchase_info": purchase_info,
+                "rank": i + previous_results,
+                "source": str(tile),
+            })
+
+        return parsed_results
 
     @staticmethod
     def validate_query(query, request, config):
@@ -332,14 +412,17 @@ class SearchAzureStore(SeleniumSearch):
             "collected_at": collected_at,
             "rank": item.get("rank"),
             "title": item.get("title", ""),
-            "developer_name": item.get("developer_name", ""),
+            "developer_name": item.get("developer_name", "") or item.get("publisher", ""),
+            "publisher": item.get("publisher", ""),
+            "summary": item.get("summary", ""),
             "icon_link": item.get("icon_link", ""),
-            "url": SearchAzureStore.base_url + item.get("href", ""),
+            "url": SearchAzureStore.base_url + (item.get("href") or ""),
             "full_details_collected": item.get("4CAT_metadata", {}).get("full_details_collected", False),
             "full_title": item.get("full_title", ""),
             "overview": item.get("overview"),
             "rating": item.get("rating", ""),
-            "review_count": item.get("review_count", ""),
+            "review_count": item.get("review_count", "") or item.get("num_ratings"),
+            "purchase_info": item.get("purchase_info", ""),
             "badges": ", ".join([badge.get("name") for badge in item.get("badges", [])]),
 
             # pricing info KEY appears in app json, but need to parse larger json for details
@@ -350,7 +433,7 @@ class SearchAzureStore(SeleniumSearch):
             "license_terms": item.get("json_data", {}).get("licenseTermsUrl"),
             
             # 4CAT standard fields
-            "body": item.get("overview"),
+            "body": item.get("overview") or item.get("summary"),
             "timestamp": int(item.get("4CAT_metadata", {}).get("collected_at_timestamp")),
         }
 
