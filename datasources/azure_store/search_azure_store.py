@@ -24,7 +24,7 @@ class SearchAzureStore(SeleniumSearch):
     is_local = False  # Whether this datasource is locally scraped
     is_static = False  # Whether this datasource is still updated
 
-    base_url = "https://azuremarketplace.microsoft.com"
+    base_url = "https://marketplace.microsoft.com"
 
     config = {
         "cache.azure.categories": {
