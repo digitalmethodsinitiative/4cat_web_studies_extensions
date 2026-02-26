@@ -3,6 +3,10 @@ import re
 import json
 import urllib
 from bs4 import BeautifulSoup
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 from backend.lib.worker import BasicWorker
 from common.lib.exceptions import ProcessorInterruptedException, ProcessorException
@@ -272,6 +276,26 @@ class SearchAzureStore(SeleniumSearch):
 
         if not self.check_page_is_loaded():
             raise ProcessorException("Azure Store did not load and timed out")
+
+        # Wait for data to load
+        wait = WebDriverWait(self.driver, 20)
+        cta_locators = [
+            (By.XPATH, "//button[.//span[contains(@class,'ms-Button-label') and normalize-space()='Get it now']]"),
+            (By.XPATH, "//button[contains(@data-bi-id,'CTA_') and .//span[contains(@class,'ms-Button-label')]]"),
+            (By.CSS_SELECTOR, "button[class*='ctaButton']"),
+        ]
+
+        cta_clicked_state = False
+        for locator in cta_locators:
+            try:
+                wait.until(EC.element_to_be_clickable(locator))
+                cta_clicked_state = True
+                break
+            except TimeoutException:
+                continue
+
+        if not cta_clicked_state:
+            self.dataset.log("Warning: No clickable CTA buttons found on Azure Store search results page; this may indicate the page structure has changed.")
 
         soup = BeautifulSoup(self.driver.page_source, "html.parser")
         results = soup.find_all(attrs={"class": "tileContainer"})
