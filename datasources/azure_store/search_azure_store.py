@@ -1,19 +1,18 @@
-import time
 import datetime
 import re
 import json
-import requests
+import urllib
 from bs4 import BeautifulSoup
 
 from backend.lib.worker import BasicWorker
-from backend.lib.search import Search
 from common.lib.exceptions import ProcessorInterruptedException, ProcessorException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
 from common.lib.helpers import url_to_hash
+from extensions.web_studies.selenium_scraper import SeleniumWrapper, SeleniumSearch
 
 
-class SearchAzureStore(Search):
+class SearchAzureStore(SeleniumSearch):
     """
     Search Microsoft Azure Store data source
     """
@@ -44,6 +43,13 @@ class SearchAzureStore(Search):
             "indirect": True
         }
     }
+
+    @classmethod
+    def is_compatible_with(cls, module=None, config=None):
+        """
+        Allow if Selenium is available
+        """
+        return SeleniumSearch.is_selenium_available(config=config)
 
     @classmethod
     def get_options(cls, parent_dataset=None, config=None):
@@ -108,23 +114,30 @@ class SearchAzureStore(Search):
         :param query:
         :return:
         """
-        queries = re.split(',|\n', self.parameters.get('query', ''))
+        if not self.is_selenium_available(config=self.config):
+            self.dataset.update_status("Selenium not available; unable to collect from Azure Store.", is_final=True)
+            return
+
+        queries = query.get("query", [""])
         if not queries:
             # can search all
             queries = [""]
-        max_results = int(self.parameters.get('amount', 60))
-        full_details = self.parameters.get('full_details', False)
+        max_results = int(query.get('amount', 60))
+        full_details = query.get('full_details', False)
         main_category = None
         sub_category = None
 
-        if self.parameters.get('category'):
-            category = self.parameters.get('category')
+        if query.get('category'):
+            category = query.get('category')
             if category == "4CAT_all_categories":
                 # default app URL is used for all categories
                 pass
             else:
-                main_category = category.split("_--_")[0]
-                sub_category = category.split("_--_")[1]
+                if "_--_" in category:
+                    main_category, sub_category = category.split("_--_", 1)
+                elif "_" in category:
+                    # Backwards compatibility with old cached keys
+                    main_category, sub_category = category.split("_", 1)
 
         count = 0
         for query in queries:
@@ -170,16 +183,16 @@ class SearchAzureStore(Search):
         Collect full details for an app
         """
         app_url = self.base_url + app["href"]
-        try:
-            response = requests.get(app_url, timeout=30)
-        except requests.exceptions.RequestException as e:
-            self.dataset.log(f"Failed to fetch details for app {app.get('title')} from Azure Store: {e}")
-            return app
-        if response.status_code != 200:
-            self.dataset.log(f"Failed to fetch details for app {app.get('title')} from Azure Store: {response.status_code} {response.reason}")
+        success, errors = self.get_with_error_handling(app_url)
+        if not success:
+            self.dataset.log(f"Failed to fetch details for app {app.get('title')} from Azure Store: {errors}")
             return app
 
-        soup = BeautifulSoup(response.content, "html.parser")
+        if not self.check_page_is_loaded():
+            self.dataset.log(f"Timed out loading details for app {app.get('title')} from Azure Store")
+            return app
+
+        soup = BeautifulSoup(self.driver.page_source, "html.parser")
         # General content
         # ID
         id_block = soup.find_all(attrs={"data-bi-name":True})
@@ -224,7 +237,7 @@ class SearchAzureStore(Search):
         app ["metadata"] = metadata
 
         json_data = self.parse_azure_json(soup)
-        app_position = json_data.get("apps").get("idMap").get(app["item_id"])
+        app_position = json_data.get("apps", {}).get("idMap", {}).get(app["item_id"]) if json_data else None
     
         app["json_data"] = json_data.get("apps").get("dataList")[app_position] if (json_data and app_position is not None) else {}
         
@@ -246,14 +259,17 @@ class SearchAzureStore(Search):
         if sub_category:
             params["subcategories"] = sub_category
 
-        try:
-            response = requests.get(query_url, params, timeout=30)
-        except requests.exceptions.RequestException as e:
-            raise ProcessorException(f"Failed to fetch data from Azure Store: {e}")
-        if response.status_code != 200:
-            raise ProcessorException(f"Failed to fetch data from Azure Store: {response.status_code} {response.reason}")
+        if params:
+            query_url += "?" + urllib.parse.urlencode(params)
 
-        soup = BeautifulSoup(response.content, "html.parser")
+        success, errors = self.get_with_error_handling(query_url)
+        if not success:
+            raise ProcessorException(f"Failed to fetch data from Azure Store: {errors}")
+
+        if not self.check_page_is_loaded():
+            raise ProcessorException("Azure Store did not load and timed out")
+
+        soup = BeautifulSoup(self.driver.page_source, "html.parser")
         results = soup.find_all(attrs={"class": "tileContainer"})
 
         return [{
@@ -276,8 +292,17 @@ class SearchAzureStore(Search):
         :param User user:  User object of user who has submitted the query
         :return dict:  Safe query parameters
         """
-           
-        return query
+        queries = [q.strip() for q in re.split(',|\n', query.get('query', "")) if q.strip()]
+        if not queries:
+            queries = [""]
+
+        return {
+            "method": query.get("method", "search"),
+            "query": queries,
+            "category": query.get("category", "4CAT_all_categories"),
+            "amount": query.get('amount', 60),
+            "full_details": query.get("full_details", False),
+        }
 
 
     @staticmethod
@@ -332,17 +357,63 @@ class SearchAzureStore(Search):
         return MappedItem(formatted_item)
 
     @staticmethod
-    def parse_azure_json(soup):
+    def parse_azure_json(soup, log=None, debug=False):
         """
-        Parse JSON object from Azure Store
+        Parse JSON object from Azure Store.
+
+        Pass `debug=True` and `log=<logger>` to enable detailed diagnostics.
         """
-        # JSON object is stored in a script tag
         scripts = soup.find_all("script")
-        for script in scripts:
-            if "window.__INITIAL_STATE__ = " in str(script):
-                return json.loads(str(script).split("window.__INITIAL_STATE__ =")[1].rstrip("</script>").strip())
-            elif "window.__INITIAL_STATE__=" in str(script):
-                return json.loads(str(script).split("window.__INITIAL_STATE__ =")[1].rstrip("</script>").strip())
+        if debug and log:
+            log.info(f"Parsing JSON data from Azure Store, found {len(scripts)} script tags to check")
+
+        decoder = json.JSONDecoder()
+        markers = [
+            ("window.__INITIAL_STATE__", r"window\.__INITIAL_STATE__\s*="),
+            ("window.INITIAL_STATE", r"window\.INITIAL_STATE\s*="),
+        ]
+
+        for i, script in enumerate(scripts):
+            script_text = script.string or script.get_text() or script.decode_contents() or ""
+            if not script_text:
+                continue
+
+            marker_used = None
+            marker_match = None
+            for marker_name, marker_pattern in markers:
+                match = re.search(marker_pattern, script_text)
+                if match:
+                    marker_used = marker_name
+                    marker_match = match
+                    break
+
+            if not marker_match:
+                continue
+
+            if debug and log:
+                log.info(f"Script[{i}] contains {marker_used}; first 180 chars: {script_text[:180]!r}")
+
+            rhs = script_text[marker_match.end():].lstrip()
+
+            # Find first JSON object start
+            brace_pos = rhs.find("{")
+            if brace_pos == -1:
+                if debug and log:
+                    log.warning(f"Found {marker_used} in Script[{i}] but no '{{' after assignment")
+                continue
+
+            try:
+                parsed, _ = decoder.raw_decode(rhs[brace_pos:])
+                if debug and log:
+                    log.info(f"Successfully parsed JSON data from Azure Store using {marker_used} in Script[{i}]")
+                return parsed
+            except json.JSONDecodeError as e:
+                if debug and log:
+                    log.warning(f"Failed JSON decode for Script[{i}] with {marker_used}: {e}")
+                continue
+
+        if debug and log:
+            log.error("! Failed to find JSON data from Azure Store")
         return None
 
 
@@ -365,50 +436,61 @@ class AzureCategories(BasicWorker):
     
     def work(self):
         """
-        Collect Azure Store categories and store them in database
+        Collect Azure Store categories and store them in database via Selenium
         """
-        # Collecting from the US store
-        categories_url = SearchAzureStore.base_url + f"/en-us/marketplace/apps"
-        response = None
-        error = []
-        for i in range(3):
-            try:
-                response = requests.get(categories_url, timeout=30)
-            except requests.exceptions.RequestException as e:
-                error.append(e)
-                time.sleep(5)
-                continue
-            if response.status_code != 200:
-                error.append(f"{response.status_code} {response.reason}")
-                time.sleep(5)
-                continue
-            break
-        if response is None or response.status_code != 200:
-            self.log.error(f"Failed to collect categories from Azure Store (retrying in {self.job_interval}): {error}")
-            return
+        categories_url = SearchAzureStore.base_url + "/en-us/marketplace/apps"
+        selenium_wrapper = SeleniumWrapper()
+        if not selenium_wrapper.is_selenium_available(config=self.config):
+            raise ProcessorException("Selenium is not available; cannot collect categories from Azure Store")
 
-        soup = BeautifulSoup(response.content, "html.parser")
+        selenium_wrapper.start_selenium(config=self.config)
+        try:
+            selenium_wrapper.selenium_log.info(f"Fetching category options from Azure Store {categories_url}")
+            selenium_wrapper.driver.get(categories_url)
+            if not selenium_wrapper.check_for_movement():
+                raise ProcessorException("Failed to load Azure Store")
 
-        # Only main categories are loaded in HTML; we can extract more from a JSON object
-        json_data = SearchAzureStore.parse_azure_json(soup)
-        category_map = None
-        if json_data:
+            if not selenium_wrapper.check_page_is_loaded():
+                raise ProcessorException("Azure Store did not load and timed out")
+
+            soup = BeautifulSoup(selenium_wrapper.driver.page_source, "html.parser")
+
+            # Only main categories are loaded in HTML; we can extract more from a JSON object
+            json_data = SearchAzureStore.parse_azure_json(soup)
+            if not json_data:
+                self.log.error(f"Failed to parse categories from Azure Store JSON (retrying in {self.job_interval})")
+                return
+
             category_map = {}
-            # we need both the main and sub categories keys
-            for _, group_type in json_data.get("apps").get("dataMap").get("categories").items():
-                # added layer of cat types
-                for cat_key, cat in group_type.items():
-                    main_key = cat.get("UrlKey")
-                    cat_title = cat.get("LongTitle")
-                    sub_cats = cat.get("SubCategoryDataMapping")
-                    if not main_key or not cat_title:
+            categories = json_data.get("apps", {}).get("dataMap", {}).get("categories", {})
+            # We need both the main and sub categories keys
+            for _, cat in categories.items():
+                main_key = cat.get("UrlKey")
+                cat_title = cat.get("LongTitle")
+                sub_cats = cat.get("SubCategoryDataMapping", {})
+                if not main_key or not cat_title:
+                    continue
+                for _, sub_cat in sub_cats.items():
+                    sub_title = sub_cat.get("LongTitle")
+                    sub_key = sub_cat.get("UrlKey")
+                    if not sub_key or not sub_title:
                         continue
-                    for sub_key, sub_cat in sub_cats.items():
-                        sub_title = sub_cat.get("LongTitle")
-                        sub_key = sub_cat.get("UrlKey")
-                        category_map[main_key + "_" + sub_key] = {"cat_key": main_key, "cat_title": cat_title, "sub_key": sub_key, "sub_title": sub_title}        
-            self.config.set("cache.azure.categories", category_map)
-            self.config.set("cache.azure.categories_updated_at", datetime.datetime.now().timestamp())
-            self.log.info(f"Collected category options ({len(category_map)}) from Azure Store")
-        else:
-            self.log.error(f"Failed to parse categories from Azure Store JSON (retrying in {self.job_interval})")
+                    category_map[main_key + "_--_" + sub_key] = {
+                        "cat_key": main_key,
+                        "cat_title": cat_title,
+                        "sub_key": sub_key,
+                        "sub_title": sub_title,
+                    }
+
+            if category_map:
+                self.log.info(
+                    f"Collected category options ({len(category_map)}) from Azure Store"
+                )
+                self.config.set("cache.azure.categories", category_map)
+                self.config.set("cache.azure.categories_updated_at", datetime.datetime.now().timestamp())
+            else:
+                self.log.warning("Failed to collect category options from Azure Store")
+        except ProcessorException as e:
+            self.log.error(f"Error collecting Azure Store categories: {e}")
+        finally:
+            selenium_wrapper.quit_selenium()
