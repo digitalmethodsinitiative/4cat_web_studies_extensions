@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta
 import re
+import json
 import urllib
+from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 from selenium.common import exceptions as selenium_exceptions
 from selenium.webdriver.support.ui import WebDriverWait
@@ -543,7 +545,12 @@ class AwsStoreCategories(BasicWorker):
             category_filters = self.get_category_filters(selenium_wrapper=selenium_wrapper, logger=self.log)
             if category_filters:
                 self.log.info(f"Collected {len(category_filters)} query types with a total of {len(sum(category_filters.values(), []))} options for the AWS Store")
-                self.config.set("cache.aws.query_options", category_filters)
+                # Update existing options with new data (replace whole sections to remove old options, but do not remove sections that are no longer collected at all due to UI/API changes)
+                old_options = self.config.get("cache.aws.query_options", {})
+                for filter_name, options in category_filters.items():
+                    old_options[filter_name] = options
+
+                self.config.set("cache.aws.query_options", old_options)
                 self.config.set("cache.aws.query_options_updated_at", datetime.now().timestamp())
             else:
                 self.log.warning("Failed to collect category options from AWS Store")
@@ -565,46 +572,75 @@ class AwsStoreCategories(BasicWorker):
         :param logger:  Logger
         :return:  dict
         """
-        # Get Query options
-        search_container_id = "migration_picker_internal_container"
-        search_container = selenium_wrapper.driver.find_element(By.ID, search_container_id)
-        option_containers = search_container.find_elements(By.TAG_NAME, "awsui-select")
-        # Collect possible filter options
-        query_filters = {}
-        for option_container in option_containers:
-            option_name = option_container.find_element(By.XPATH, "../span").text
-            query_filters[option_name] = []
+        # 2026-3: AWS updated UI and filters no longer exist in dropdowns, Vendors, Pricing Models, and Delivery Methods filters are now text-based with "Show all" options and only on search pages
+        # TODO: if required, add navigation and parse these from search pages; vendors (now publishers?) have show all and popup page with next buttons as well
 
-            # Open option dropdown
-            button = option_container.find_elements(By.CLASS_NAME, "awsui-select-trigger-icon")
-            if not button:
-                logger.warning(f"Unable to find button for {option_name}")
+        # Extract categories from embedded JSON
+        soup = BeautifulSoup(selenium_wrapper.driver.page_source, "html.parser")
+        markers = [
+            ("var categoryMap = ", r"var categoryMap\s*="),
+        ]
+        category_data = AwsStoreCategories.parse_category_json(soup, markers=markers, log=logger, debug=True)
+        new_data = {
+            "Categories":[{'name': 'All categories', 'data-value': 'All categories'}],
+        }
+        # Looks like all we need are the english names and the data-value
+        for i, (k,v) in enumerate(category_data['categoryMessageMap']['en'].items()):
+            new_data["Categories"].append({v:k})
+        
+        return new_data
+
+    @staticmethod    
+    def parse_category_json(soup, markers=None, log=None, debug=False):
+        """
+        Parse JSON object from AWS Store.
+
+        Pass `debug=True` and `log=<logger>` to enable detailed diagnostics.
+        """
+        scripts = soup.find_all("script")
+        if debug and log:
+            log.info(f"Parsing JSON data from AWS Store, found {len(scripts)} script tags to check")
+
+        decoder = json.JSONDecoder()
+        for i, script in enumerate(scripts):
+            script_text = script.string or script.get_text() or script.decode_contents() or ""
+            if not script_text:
                 continue
-            # Click button; this is a destructive method and removed obscuring elements
-            selenium_wrapper.destroy_to_click(button[0])
 
-            # Get dropdown list (this is not visible until button is clicked)
-            drop_down_list = option_container.find_element(By.CLASS_NAME, "awsui-select-dropdown")
-            # Select list element
-            drop_down_list = drop_down_list.find_element(By.TAG_NAME, "ul")
+            marker_used = None
+            marker_match = None
+            for marker_name, marker_pattern in markers:
+                match = re.search(marker_pattern, script_text)
+                if match:
+                    marker_used = marker_name
+                    marker_match = match
+                    break
 
-            # Check if sub lists exist
-            groups = drop_down_list.find_elements(By.TAG_NAME, "ul")
-            if not groups:
-                groups = [drop_down_list]
+            if not marker_match:
+                continue
 
-            for group in groups:
-                for option in group.find_elements(By.TAG_NAME, "li"):
-                    # Scrape options
-                    try:
-                        option_value = option.find_element(By.XPATH, "./div[@data-value]").get_attribute(
-                            "data-value")
-                        query_filters[option_name].append({
-                            "name": option.text,
-                            "data-value": option_value,
-                        })
-                    except selenium_exceptions.NoSuchElementException:
-                        logger.warning(f"Unable to extract options for {option.text} {option.get_attribute('outerHTML')}")
-                        continue
+            if debug and log:
+                log.info(f"Script[{i}] contains {marker_used}; first 180 chars: {script_text[:180]!r}")
 
-        return query_filters
+            rhs = script_text[marker_match.end():].lstrip()
+
+            # Find first JSON object start
+            brace_pos = rhs.find("{")
+            if brace_pos == -1:
+                if debug and log:
+                    log.warning(f"Found {marker_used} in Script[{i}] but no '{{' after assignment")
+                continue
+
+            try:
+                parsed, _ = decoder.raw_decode(rhs[brace_pos:])
+                if debug and log:
+                    log.info(f"Successfully parsed JSON data from AWS Store using {marker_used} in Script[{i}]")
+                return parsed
+            except json.JSONDecodeError as e:
+                if debug and log:
+                    log.error(f"Failed JSON decode for Script[{i}] with {marker_used}: {e}")
+                continue
+
+        if log:
+            log.error("Failed to find category JSON data from AWS Store")
+        return None
