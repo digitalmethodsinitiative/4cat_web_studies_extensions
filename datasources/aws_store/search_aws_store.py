@@ -5,6 +5,7 @@ from selenium.webdriver.common.by import By
 from selenium.common import exceptions as selenium_exceptions
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.expected_conditions import staleness_of
 
 from extensions.web_studies.selenium_scraper import SeleniumWrapper
 from backend.lib.worker import BasicWorker
@@ -102,6 +103,10 @@ class SearchAwsStore(SeleniumSearch):
                 config.db.log.warning(f"AWS Unknown filter name: {filter_name}")
                 continue
 
+            if not filter_options:
+                # Some filters are not currently being collected due to UI and API changes
+                continue
+
             options[cls.query_param_map[filter_name]] = {
                 "type": UserInput.OPTION_MULTI_SELECT,
                 "help": f"Filter by {filter_name}",
@@ -153,7 +158,7 @@ class SearchAwsStore(SeleniumSearch):
 
         missing_filters = []
         total_queries = len(search_queries) * len(categories) * len(creators) * len(pricing_models) * len(fulfillment_option_types)
-        self.dataset.update_status(f"Collecting {total_queries} queries from AWS Store")
+        self.dataset.update_status(f"Collecting {total_queries} queries (max {max_results} per query) from AWS Store")
         tried_queries = 0
         for search_query in search_queries:
             for category in categories:
@@ -233,41 +238,86 @@ class SearchAwsStore(SeleniumSearch):
                                 self.log.warning(f"{self.type} number of results element not found; unknown number of results")
                                 self.dataset.log("Unknown number of results found")
                             total_results = min(num_results if num_results else max_results, max_results)
+                            self.dataset.log(f"Starting AWS pagination at page {page}; target {total_results} results")
 
-                            while collected < max_results:
-                                results_table = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'tbody')))
-                                # Wait for first result to load
-                                WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, '//h2[@data-semantic="title"]')))
-                                
-                                for result_block in results_table.find_elements(By.TAG_NAME, "tr"):
-                                    if self.interrupted:
-                                        raise ProcessorInterruptedException("Interrupted while collecting AWS Store results")
+                            while collected < total_results:
+                                try:
+                                    results_table = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'tbody')))
+                                    WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, '//h2[@data-semantic="title"]')))
+                                except selenium_exceptions.TimeoutException:
+                                    self.dataset.log(f"AWS page {page}: timeout waiting for results to render; stopping pagination for this query")
+                                    break
 
-                                    # TODO: check full details
-                                    result = self.parse_search_result(result_block)
-                                    result["id"] = result["app_id"]
-                                    result["4CAT_metadata"] = {"query": search_query,
-                                                            "category": category,
-                                                            "creator": creator,
-                                                            "pricing_model": pricing_model,
-                                                            "fulfillment_option_type": fulfillment_option_type,
-                                                            # These codes are used to filter the results in the AWS Store
-                                                            "filter_codes": {"category": category_code,
-                                                                            "creator": creator_code,
-                                                                            "pricing_model": pricing_model_code,
-                                                                            "fulfillment_option_type": fulfillment_option_type_code},
-                                                            "page": page,
-                                                            "rank": result_number,
-                                                            "collected_at_timestamp": datetime.now().timestamp()}
-                                    result_number += 1
-                                    collected += 1
-                                    yield result
-                                    
+                                # Check if there are results
+                                result_rows = results_table.find_elements(By.TAG_NAME, "tr")
+                                self.dataset.log(f"AWS page {page}: found {len(result_rows)} rows")
+                                if not result_rows:
+                                    self.dataset.log(f"No result rows found on AWS page {page}; stopping pagination for this query")
+                                    break
+                                else:
+                                    self.dataset.log(f"AWS page {page}: collecting results table w/ {len(result_rows)} rows ({collected}/{total_results} collected previously)")
+
+                                default_implicit_wait = self.config.get('selenium.implicit_wait', 10)
+                                # Set implicit wait to 0 to speed up collection since we are already checking for element presence with WebDriverWait; will reset to default at end of page collection
+                                self.driver.implicitly_wait(0)
+                                try:
+                                    for row_index, result_block in enumerate(result_rows, start=1):
+                                        if self.interrupted:
+                                            raise ProcessorInterruptedException("Interrupted while collecting AWS Store results")
+
+                                        if collected >= total_results:
+                                            break
+
+                                        # TODO: check full details
+                                        try:
+                                            result = self.parse_search_result(result_block)
+                                        except Exception as e:
+                                            self.dataset.log(f"AWS page {page}: failed parsing row {row_index}; skipping ({type(e).__name__}: {e})")
+                                            continue
+
+                                        result["id"] = result["app_id"]
+                                        result["4CAT_metadata"] = {"query": search_query,
+                                                                "category": category,
+                                                                "creator": creator,
+                                                                "pricing_model": pricing_model,
+                                                                "fulfillment_option_type": fulfillment_option_type,
+                                                                # These codes are used to filter the results in the AWS Store
+                                                                "filter_codes": {"category": category_code,
+                                                                                "creator": creator_code,
+                                                                                "pricing_model": pricing_model_code,
+                                                                                "fulfillment_option_type": fulfillment_option_type_code},
+                                                                "page": page,
+                                                                "rank": result_number,
+                                                                "collected_at_timestamp": datetime.now().timestamp()}
+                                        result_number += 1
+                                        collected += 1
+                                        yield result
+                                finally:
+                                    self.driver.implicitly_wait(default_implicit_wait)
+
+                                self.dataset.log(f"Collected {collected} results so far for query: {search_query if search_query else 'no query provided'}")
+                                first_row_before = result_rows[0]
                                 if not self.click_next_page(self.driver):
                                     # No next page
                                     break
                                 else:
+                                    try:
+                                        WebDriverWait(self.driver, 5).until(staleness_of(first_row_before))
+                                    except selenium_exceptions.TimeoutException:
+                                        self.dataset.log(f"AWS page did not change after clicking next on page {page}; stopping pagination for this query")
+                                        break
                                     page += 1
+
+                            if not collected:
+                                self.dataset.log(f"AWS no-rows debug URL: {self.driver.current_url}")
+                                try:
+                                    body_text = self.driver.find_element(By.TAG_NAME, "body").text.strip()
+                                except selenium_exceptions.NoSuchElementException:
+                                    body_text = ""
+                                if body_text:
+                                    self.dataset.log(f"AWS no-rows debug text: {body_text[:1000].replace(chr(10), ' ')}")
+                                else:
+                                    self.dataset.log(f"AWS no-rows debug source: {self.driver.page_source[:1500].replace(chr(10), ' ')}")
                             
                             self.dataset.update_progress(tried_queries / total_queries)
                             self.dataset.update_status(f"Collected {collected} of {total_results} results for query: {search_query if search_query else 'no query provided'}, category: {category if category else 'all'}, creator: {creator if creator else 'all'}, pricing model: {pricing_model_code if pricing_model_code else 'all'}, fulfillment type: {fulfillment_option_type_code if fulfillment_option_type_code else 'all'} ({tried_queries} of {total_queries})")
@@ -377,9 +427,13 @@ class SearchAwsStore(SeleniumSearch):
         next_page = driver.find_elements(By.XPATH, '//button[@aria-label="Next page"]')
         if not next_page:
             return False
-        driver.execute_script("arguments[0].scrollIntoView(true);", next_page[0])
-        self.smart_click(next_page[0])
-        return True
+
+        next_button = next_page[0]
+        if next_button.get_attribute("aria-disabled") == "true" or not next_button.is_enabled():
+            return False
+
+        driver.execute_script("arguments[0].scrollIntoView(true);", next_button)
+        return self.smart_click(next_button)
 
     @staticmethod
     def map_item(item):
