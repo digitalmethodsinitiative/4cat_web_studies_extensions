@@ -423,7 +423,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         :param browser_type: Type of browser for logging ("firefox", "chrome", "undetected-chrome")
         :return: bool indicating if virtual display is being used
         """
-        use_virtual_display = self.config.get('selenium.use_virtual_display', True)
+        use_virtual_display = self.config.get('selenium.use_virtual_display', False)
         display_available = self.start_virtual_display() if use_virtual_display else False
 
         if display_available:

@@ -71,6 +71,49 @@ if __name__ == "__main__":
 		command = f"{interpreter} -m pip install -r requirements.txt"
 		run_command(command, "Error installing python requirements")
 
+	def install_apt_packages(packages, required=True):
+		"""
+		Install apt packages, retrying once after apt-get update when package indexes are stale.
+
+		:param str packages: Space-separated list of packages
+		:param bool required: If True, installation failure exits. If False, warns and continues.
+		:return bool: True if installed successfully, else False
+		"""
+		command = f"apt-get install --no-install-recommends -y {packages}"
+		result = subprocess.run(command.split(" "), stdout=subprocess.PIPE,
+							stderr=subprocess.PIPE)
+
+		if result.returncode == 0:
+			return True
+
+		stderr = result.stderr.decode("ascii", errors="ignore")
+		if "E: Unable to locate package" in stderr:
+			print("Packages not found; updating apt-get package list")
+			update_result = subprocess.run(["apt-get", "update"], stdout=subprocess.PIPE,
+							stderr=subprocess.PIPE)
+			if update_result.returncode != 0:
+				if required:
+					print("Error updating package list")
+					print("Please run `apt-get update` manually")
+					exit(1)
+				print(f"Warning: Could not update apt package list while installing optional package(s): {packages}")
+				return False
+
+			result = subprocess.run(command.split(" "), stdout=subprocess.PIPE,
+							stderr=subprocess.PIPE)
+			if result.returncode == 0:
+				return True
+
+		if required:
+			print("Error installing packages")
+			print("Please install the following packages manually")
+			print(packages)
+			exit(1)
+
+		print(f"Warning: Could not install optional package(s): {packages}")
+		print("Selenium will continue in headless mode unless virtual display is installed later.")
+		return False
+
 	if args.component == "frontend":
 		# Frontend still needs packages though only to import modules successfully
 		if not args.no_pip:
@@ -93,9 +136,10 @@ if __name__ == "__main__":
 
 	firefox_installed = False
 	geckodriver_installed = False
+	xvfb_installed = False
 	if not args.force:
-		# Check if Firefox and Geckodriver are already installed
-		print("Checking if Firefox and Geckodriver are already installed")
+		# Check if Firefox, Geckodriver, and Xvfb are already installed
+		print("Checking if Firefox, Geckodriver, and Xvfb are already installed")
 		firefox_path = shutil.which("firefox")
 		if firefox_path is not None:
 			command = "firefox --version"
@@ -116,33 +160,36 @@ if __name__ == "__main__":
 				print("Geckodriver is already installed")
 				geckodriver_installed = True
 
-	if firefox_installed and geckodriver_installed:
+		xvfb_path = shutil.which("Xvfb")
+		if xvfb_path is not None:
+			print("Xvfb is already installed")
+			xvfb_installed = True
+
+	if firefox_installed and geckodriver_installed and xvfb_installed:
+		print("Firefox, Geckodriver, and Xvfb already installed. No action required.")
 		exit(0)
 
 	# Install additional packages
 	print("Ensuring required packages are installed")
 	PACKAGES = "wget bzip2 libgtk-3-0 libasound2 libdbus-glib-1-2 libx11-xcb1 libxtst6"
-	command = f"apt-get install --no-install-recommends -y {PACKAGES}"
-	result = subprocess.run(command.split(" "), stdout=subprocess.PIPE,
-							stderr=subprocess.PIPE)
-	if result.returncode != 0:
-		if "E: Unable to locate package" in result.stderr.decode("ascii"):
-			print("Packages not found; updating apt-get package list")
-			result = subprocess.run(["apt-get", "update"], stdout=subprocess.PIPE,
-							stderr=subprocess.PIPE)
-			if result.returncode != 0:
-				print("Error updating package list")
-				print("Please run `apt-get update` manually")
-				exit(1)
-			else:
-				result = subprocess.run(command.split(" "), stdout=subprocess.PIPE,
-							stderr=subprocess.PIPE)
-				if result.returncode != 0:
-					print("Error installing packages")
-					print("Please install the following packages manually")
-					print(PACKAGES)
-					exit(1)
+	install_apt_packages(PACKAGES, required=True)
 	print(f"Installed packages: {PACKAGES}")
+
+	# Attempt to install optional Xvfb (non-fatal if it fails)
+	xvfb_available = shutil.which("Xvfb") is not None
+	if xvfb_available:
+		print("Xvfb is already installed")
+	else:
+		print("Attempting to install optional package: xvfb")
+		if install_apt_packages("xvfb", required=False):
+			xvfb_available = shutil.which("Xvfb") is not None
+		else:
+			xvfb_available = False
+
+	if xvfb_available:
+		print("Xvfb is available; virtual display support can be enabled")
+	else:
+		print("Xvfb is not available; Selenium will use headless mode unless Xvfb is installed later")
 
 	# Identify latest geckodriver
 	if not geckodriver_installed:
@@ -196,5 +243,6 @@ if __name__ == "__main__":
 	config.with_db()
 	config.set('selenium.selenium_executable_path', "/usr/local/bin/geckodriver")
 	config.set('selenium.browser', 'firefox')
+	config.set('selenium.use_virtual_display', bool(xvfb_available))
 	print("Firefox and Geckodriver installation complete")
 	exit(0)

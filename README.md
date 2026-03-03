@@ -36,7 +36,10 @@ For instructions on adding the "I do not care about cookies" browser extension, 
   - `docker exec 4cat_frontend git clone https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions.git extensions/web_studies/`
 2. Restart 4CAT containers
   - `docker compose restart` from 4CAT directory where `docker-compose.yml` and `.env` files were previously downloaded
-  - This will automatically install necessary dependencies, Firefox, and Geckodriver
+  - If `firefox`, `geckodriver`, and `xvfb` are already installed, the installer exits without making changes
+  - This will automatically install necessary dependencies, Firefox, Geckodriver, and attempt to install `xvfb`
+  - If `xvfb` installs successfully, Selenium virtual display is enabled automatically (`selenium.use_virtual_display = true`)
+  - If `xvfb` installation fails, installation continues and Selenium falls back to headless mode
 3. Activate desired new datasources from the 4CAT Control Panel
   - Control Panel -> Settings -> Data sources
 
@@ -45,10 +48,12 @@ For instructions on adding the "I do not care about cookies" browser extension, 
   - `git clone https://github.com/digitalmethodsinitiative/4cat_web_studies_extensions.git extensions/web_studies/`
 2. Run 4CAT's migrate script to install necessary packages
   - `python helper-scripts/migrate.py`
+  - If `firefox`, `geckodriver`, and `xvfb` are already installed, the installer exits without making changes
   - Note: `fourcat_insall.py` is only designed to run on linux systems. For other systems you will need set up the following:
     - Install python packages from `requirements.txt`
     - Download Firefox
     - Download the appropriate Geckodriver compatible with that version of Firefox (https://github.com/mozilla/geckodriver/releases/)
+    - Optionally install `xvfb` to use Selenium virtual display mode
     - Adjust settings in 4CAT interface via `Control Panel -> Settings -> selenium` to point to Firefox/Geckodriver programs
 3. Activate desired datasources from the 4CAT Control Panel
   - Control Panel -> Settings -> Data sources
