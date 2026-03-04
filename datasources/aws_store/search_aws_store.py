@@ -586,7 +586,7 @@ class AwsStoreCategories(BasicWorker):
         }
         # Looks like all we need are the english names and the data-value
         for i, (k,v) in enumerate(category_data['categoryMessageMap']['en'].items()):
-            new_data["Categories"].append({v:k})
+            new_data["Categories"].append({"name": v, "data-value": k})
         
         return new_data
 
