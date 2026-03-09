@@ -167,48 +167,27 @@ class SearchAppleStore(Search):
             if method != 'app':
                 list_of_apps = collect_from_store('apple', method, languages=re.split(',|\n', self.parameters.get('languages')), countries=re.split(',|\n', self.parameters.get('countries')), params=params, log=self.dataset.log)
             else:
-                list_of_apps = queries
+                list_of_apps = [{"id": query} for query in queries]
 
             for i, app in enumerate(list_of_apps):
                 if self.interrupted:
                     raise ProcessorInterruptedException("Interrupted while getting collecting detailed results from Apple Store")
-                if method != 'app':
-                    lang = app.get('lang', 'en-US')
-                    country = app.get('country', 'us')
-                    try:
-                        results.append(self.collect_detailed_data_from_apple_store_by_id(app['id'], country, lang))
-                    except AppStoreConnectionError as e:
-                        self.dataset.update_status(f"Error collecting app {app['id']}: {e}")
-                        continue
-                    except ProcessorException as e:
-                        self.dataset.update_status(f"Error collecting app {app['id']}: {e}")
-                        consecutive_errors += 1
-                        if consecutive_errors > 5:
-                            self.dataset.update_status(f"Too many errors collecting apps; see log for details", is_final=True)
-                            break
-                        continue
-                else:
-                    # List of apps only contains IDs
-                    # TODO: issue w/ languages and countries; likely codes
-                    # languages = [lang.strip() for lang in self.parameters.get('languages')] if self.parameters.get('languages') else []
-                    # countries = [country.strip() for country in self.parameters.get('countries')] if self.parameters.get('countries') else []
-                    # for country in countries:
-                    #     for language in languages:
-                    if self.interrupted:
-                        raise ProcessorInterruptedException("Interrupted while getting collecting detailed results from Apple Store")
-                    try:
-                        results.append(self.collect_detailed_data_from_apple_store_by_id(app))#, country, language))
-                    except AppStoreConnectionError as e:
-                        self.dataset.log(f"Error collecting app {app}: {e}")
-                        continue
-                    except ProcessorException as e:
-                        self.dataset.update_status(f"Error collecting app {app['id']}: {e}")
-                        consecutive_errors += 1
-                        if consecutive_errors > 5:
-                            self.dataset.update_status(f"Too many errors collecting apps; see log for details", is_final=True)
-                            break
-                        continue
-
+            
+                lang = app.get('lang', 'en-US')
+                country = app.get('country', 'us')
+                try:
+                    results.append(self.collect_detailed_data_from_apple_store_by_id(app['id'], country, lang))
+                except AppStoreConnectionError as e:
+                    self.dataset.update_status(f"Error collecting app {app['id']}: {e}")
+                    continue
+                except ProcessorException as e:
+                    self.dataset.update_status(f"Error collecting app {app['id']}: {e}")
+                    consecutive_errors += 1
+                    if consecutive_errors > 5:
+                        self.dataset.update_status(f"Too many errors collecting apps; see log for details", is_final=True)
+                        break
+                    continue
+                
         if results:
             self.dataset.log(f"Collected {len(results)} results from Apple Store")
             return [{"4CAT_metadata": {"query_method": method, "collected_at_timestamp": datetime.datetime.now().timestamp(), "item_index": i, "beta": self.parameters.get('beta_details', False)}, **result} for i, result in enumerate(results)]
