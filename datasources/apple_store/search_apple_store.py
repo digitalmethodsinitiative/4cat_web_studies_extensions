@@ -24,6 +24,8 @@ from common.lib.user_input import UserInput
 class AppStoreConnectionError(Exception):
     pass
 
+class AppleStoreExtractionsException(ProcessorException):
+    pass
 
 class SearchAppleStore(Search):
     """
@@ -158,6 +160,7 @@ class SearchAppleStore(Search):
         results = []
 
         consecutive_errors = 0
+        extraction_errors = 0
 
         if not self.parameters.get('beta_details', False):
             self.dataset.log(f"Collecting {method} from Apple Store")
@@ -180,8 +183,10 @@ class SearchAppleStore(Search):
                 except AppStoreConnectionError as e:
                     self.dataset.update_status(f"Error collecting app {app['id']}: {e}")
                     continue
-                except ProcessorException as e:
+                except (ProcessorException, AppleStoreExtractionsException) as e:
                     self.dataset.update_status(f"Error collecting app {app['id']}: {e}")
+                    if isinstance(e, AppleStoreExtractionsException):
+                        extraction_errors += 1
                     consecutive_errors += 1
                     if consecutive_errors > 5:
                         self.dataset.update_status(f"Too many errors collecting apps; see log for details", is_final=True)
@@ -192,6 +197,8 @@ class SearchAppleStore(Search):
             self.dataset.log(f"Collected {len(results)} results from Apple Store")
             return [{"4CAT_metadata": {"query_method": method, "collected_at_timestamp": datetime.datetime.now().timestamp(), "item_index": i, "beta": self.parameters.get('beta_details', False)}, **result} for i, result in enumerate(results)]
         else:
+            if extraction_errors:
+                self.log.warning(f"Encountered {extraction_errors} errors extracting data from Apple Store. No items were collected.")
             self.dataset.log(f"No results identified for {self.parameters.get('query', '') if method != 'lists' else self.parameters.get('collection')} from Apple Store")
             return []
 
@@ -526,7 +533,7 @@ class SearchAppleStore(Search):
                     pass
 
         if not script_content:
-            raise ProcessorException("Beta endpoint: Unable to find any embedded JSON data in the HTML response")
+            raise AppleStoreExtractionsException("Beta endpoint: Unable to find any embedded JSON data in the HTML response")
         
         # Search for desired JSON object
         desired_keys = ["id", "type", "href", "attributes"]
