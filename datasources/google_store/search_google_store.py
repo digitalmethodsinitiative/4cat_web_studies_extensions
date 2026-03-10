@@ -194,6 +194,7 @@ class SearchGoogleStore(SearchAppleStore):
             for query in queries:
                 for country in countries:
                     for lang in languages:
+                        results = []
                         self.dataset.log(f"Collecting {method} for '{query}' from Google Store for country '{country}' and language '{lang}'")
                         url = google_play_url.rstrip('/') + api_endpoint
                         if method == 'search':
@@ -226,6 +227,7 @@ class SearchGoogleStore(SearchAppleStore):
                         except requests.RequestException as e:
                             self.dataset.log(f"Error fetching data from Google Play API for query '{query}', country '{country}', language '{lang}': {e}")
                             failed_queries.append((query, country, lang))
+                            continue
 
                         if results:
                             self.dataset.log(f"Collected {len(results)} results from Google Play Store for query '{query}', country '{country}', language '{lang}'")
