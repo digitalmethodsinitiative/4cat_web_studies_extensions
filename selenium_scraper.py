@@ -113,7 +113,115 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
                 return True, "", "", current
         return False, "", "", current
 
-    def get_with_error_handling(self, url, max_attempts=1, wait=0, restart_browser=True):
+    @staticmethod
+    def add_cookies(driver, cookies, url=None):
+        """
+        Add a cookie or list of cookies to a Selenium `driver`.
+        cookies: dict or list of dicts. Each cookie must include 'name' and 'value'.
+                Optional keys: 'domain', 'path', 'expiry' (unix seconds), 'secure', 'httpOnly'.
+        url: optional full URL (scheme+host) to navigate to first — required if cookie domain must match.
+        """
+        if not isinstance(cookies, (list, tuple)):
+            cookies = [cookies]
+        if url:
+            driver.get(url)
+        allowed = {'name', 'value', 'path', 'domain', 'secure', 'httpOnly', 'expiry'}
+        for c in cookies:
+            cookie = c.copy()
+            if 'expiry' in cookie and cookie['expiry'] is not None:
+                cookie['expiry'] = int(cookie['expiry'])
+            cookie = {k: v for k, v in cookie.items() if k in allowed and v is not None}
+            driver.add_cookie(cookie)
+
+    def _normalize_domain(self, domain: str):
+        """Normalize a cookie domain (strip leading dot and lower-case)."""
+        if not domain:
+            return None
+        return domain.lstrip('.').lower()
+
+    def _domain_matches(self, host: str, cookie_domain: str):
+        """Return True if `cookie_domain` applies to `host` (handles subdomains)."""
+        if not host or not cookie_domain:
+            return False
+        host = host.lower()
+        cd = self._normalize_domain(cookie_domain)
+        if host == cd:
+            return True
+        # match subdomains
+        return host.endswith('.' + cd)
+
+    def _group_cookies_by_domain(self, cookie_jar, default_host=None):
+        """Group a list of cookie dicts by normalized domain.
+
+        Cookies without a `domain` key are assigned to `default_host`.
+        Returns a dict: {normalized_domain: [cookie_dict, ...]}
+        """
+        grouped = {}
+        if not cookie_jar:
+            return grouped
+        for c in cookie_jar:
+            domain = c.get('domain')
+            if domain:
+                nd = self._normalize_domain(domain)
+            else:
+                nd = default_host.lower() if default_host else None
+            if not nd:
+                continue
+            grouped.setdefault(nd, []).append(c)
+        return grouped
+
+    def apply_cookies_for_url(self, url, cookie_jar):
+        """Apply cookies appropriate for `url` from `cookie_jar`.
+
+        Returns a list of errors encountered (empty if none).
+        """
+        errors = []
+        if not cookie_jar:
+            return errors
+        if not self.driver:
+            return errors
+
+        try:
+            host = urlparse(url).hostname
+        except Exception:
+            host = None
+        if not host:
+            return errors
+
+        grouped = self._group_cookies_by_domain(cookie_jar, default_host=host)
+        # Ensure cache exists
+        if not hasattr(self, '_cookie_domains_applied') or self._cookie_domains_applied is None:
+            self._cookie_domains_applied = set()
+
+        for domain, cookies in grouped.items():
+            # Only apply cookies that match the target host
+            if not self._domain_matches(host, domain) and domain != host:
+                continue
+
+            if domain in self._cookie_domains_applied:
+                # already applied for this session
+                continue
+
+            # choose scheme: prefer https if any cookie is secure
+            scheme = 'https' if any(c.get('secure') for c in cookies) else 'http'
+            origin = f"{scheme}://{domain}"
+
+            try:
+                # Use the static helper which may navigate if origin provided
+                type(self).add_cookies(self.driver, cookies, url=origin)
+                self._cookie_domains_applied.add(domain)
+            except Exception as e:
+                # log and keep going
+                try:
+                    if hasattr(self, 'selenium_log') and self.selenium_log:
+                        self.selenium_log.warning(f"Error adding cookies for {domain}: {e}")
+                except Exception:
+                    pass
+                errors.append(e)
+
+        return errors
+
+    def get_with_error_handling(self, url, max_attempts=1, wait=0, cookie_jar=None, restart_browser=True):
         """
         Attempts to call driver.get(url) with error handling. Will attempt to restart Selenium if it fails and can
         attempt to kill Firefox (and allow Selenium to restart) itself if allowed.
@@ -123,6 +231,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         :param str url:                URL to retrieve
         :param int max_attempts:       Maximum number of attempts to retrieve the URL
         :param int wait:               Seconds to wait between attempts
+        :param list cookie_jar:        List of cookies to add to the driver
         :param bool restart_browser:   If True, will kill the browser process if too many consecutive errors occur
         """
         # Start clean
@@ -135,6 +244,16 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         success = False
         attempts = 0
         errors = []
+
+        # Apply any user-provided cookies appropriate for this URL
+        if cookie_jar:
+            try:
+                cookie_errors = self.apply_cookies_for_url(url, cookie_jar)
+                if cookie_errors:
+                    # convert exceptions/messages into errors list for caller visibility
+                    [errors.append(e) for e in cookie_errors]
+            except Exception as e:
+                errors.append(e)
         while attempts < max_attempts:
             attempts += 1
             try:
@@ -286,6 +405,8 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         elif self.browser is None:
             # Use configured default browser
             self.browser = self.config.get('selenium.browser')
+        # Track which domains we've already applied cookies for in this session
+        self._cookie_domains_applied = set()
         self.selenium_log.info(f"Starting Selenium with browser: {self.browser}")
         
         if self.browser != "firefox":
@@ -606,6 +727,11 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             self.selenium_log.error(e)
         self.driver = None
         self.last_scraped_url = None
+        # Clear applied-cookie domain cache
+        try:
+            self._cookie_domains_applied = set()
+        except Exception:
+            pass
 
         if kill_browser:
             time.sleep(2)

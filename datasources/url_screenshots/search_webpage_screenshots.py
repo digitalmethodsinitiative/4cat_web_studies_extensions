@@ -90,13 +90,43 @@ class ScreenshotWithSelenium(SeleniumSearch):
                 "min": 0,
                 "max": 30,
             },
+            "advanced-options-toggle": {
+                "type": UserInput.OPTION_TOGGLE,
+                "help": "Show advanced options",
+                "default": False
+            },
+            "intro-cookies": {
+                "type": UserInput.OPTION_INFO,
+                "help": "The following options can be used to add user cookies to the browser. This can be useful for sites that require a login or that show cookie "
+                        "walls before allowing access to the site content. These options may not work for all sites and may lead to unexpected results, such as "
+                        "missing screenshots or incomplete page loads. *This may also result in blocked access to some sites or even banning*. You can use tools such as "
+                        "[Cookie-Editor](https://addons.mozilla.org/en-US/firefox/addon/cookie-editor/) to copy your brower's cookies.",
+                "requires": "advanced-options-toggle==True"
+            },
+            "cookies-toggle": {
+                "type": UserInput.OPTION_CHOICE,
+                "help": "Upload cookies format",
+                "options": {
+                    "none": "Don't add user cookies",
+                    "json": "Add user cookies in JSON format",
+                    },
+                "default": "none",
+                "requires": "advanced-options-toggle==True"
+            },
+            "add_user_cookies_json": {
+                "type": UserInput.OPTION_TEXT_JSON,
+                "help": "Cookies in JSON format",
+                "default": [],
+                "tooltip": 'e.g. [{"name": "cookie1", "value": "value1", "domain": ".example.com"}, {"name": "cookie2", "value": "value2", "domain": ".example.com"}]',
+                "requires": ["advanced-options-toggle==True", "cookies-toggle==json"],
+            },
         }
         if config.get('selenium.firefox_extensions') and config.get('selenium.firefox_extensions', default={}).get('i_dont_care_about_cookies', {}).get('path'):
             options["ignore-cookies"] = {
                "type": UserInput.OPTION_TOGGLE,
                "help": "Attempt to ignore cookie walls",
                "default": False,
-               "tooltip": 'If enabled, a firefox extension will attempt to "agree" to any cookie walls automatically.'
+               "tooltip": 'If enabled, a Firefox extension will attempt to "agree" to any cookie walls automatically.'
             }
 
         return options
@@ -115,6 +145,9 @@ class ScreenshotWithSelenium(SeleniumSearch):
         pause = self.parameters.get("pause-time")
         wait = self.parameters.get("wait-time")
 
+        # Cookies
+        user_cookies = self.parameters.get("add_user_cookies_json", []) if self.parameters.get("cookies-toggle") == "json" else []
+        
         width = convert_to_int(resolution.split("x")[0], 1024)
         height = convert_to_int(resolution.split("x").pop(), 786) if capture == "viewport" else None
 
@@ -165,7 +198,7 @@ class ScreenshotWithSelenium(SeleniumSearch):
 
                 attempts += 1
                 start_time = time.time()
-                get_success, errors = self.get_with_error_handling(url, max_attempts=1, wait=wait, restart_browser=True)
+                get_success, errors = self.get_with_error_handling(url, cookie_jar=user_cookies, max_attempts=1, wait=wait, restart_browser=True)
                 if errors:
                     # Even if success, it is possible to have errors on earlier attempts
                     [result['error'].append("Attempt %i: %s" % (attempts + i, str(error))) for i, error in enumerate(errors)]
