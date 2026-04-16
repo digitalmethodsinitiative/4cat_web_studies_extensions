@@ -91,9 +91,13 @@ class ScreenshotWithSelenium(SeleniumSearch):
                 "max": 30,
             },
             "advanced-options-toggle": {
-                "type": UserInput.OPTION_TOGGLE,
+                "type": UserInput.OPTION_CHOICE,
                 "help": "Show advanced options",
-                "default": False
+                "options": {
+                    "false": "No",
+                    "true": "Yes"
+                },
+                "default": "false"
             },
             "intro-cookies": {
                 "type": UserInput.OPTION_INFO,
@@ -101,7 +105,7 @@ class ScreenshotWithSelenium(SeleniumSearch):
                         "walls before allowing access to the site content. These options may not work for all sites and may lead to unexpected results, such as "
                         "missing screenshots or incomplete page loads. *This may also result in blocked access to some sites or even banning*. You can use tools such as "
                         "[Cookie-Editor](https://addons.mozilla.org/en-US/firefox/addon/cookie-editor/) to copy your brower's cookies.",
-                "requires": "advanced-options-toggle==True"
+                "requires": "advanced-options-toggle==true"
             },
             "cookies-toggle": {
                 "type": UserInput.OPTION_CHOICE,
@@ -111,14 +115,14 @@ class ScreenshotWithSelenium(SeleniumSearch):
                     "json": "Add user cookies in JSON format",
                     },
                 "default": "none",
-                "requires": "advanced-options-toggle==True"
+                "requires": "advanced-options-toggle==true"
             },
             "add_user_cookies_json": {
                 "type": UserInput.OPTION_TEXT_JSON,
                 "help": "Cookies in JSON format",
                 "default": [],
                 "tooltip": 'e.g. [{"name": "cookie1", "value": "value1", "domain": ".example.com"}, {"name": "cookie2", "value": "value2", "domain": ".example.com"}]',
-                "requires": ["advanced-options-toggle==True", "cookies-toggle==json"],
+                "requires": ["advanced-options-toggle==true", "cookies-toggle==json"],
             },
         }
         if config.get('selenium.firefox_extensions') and config.get('selenium.firefox_extensions', default={}).get('i_dont_care_about_cookies', {}).get('path'):
