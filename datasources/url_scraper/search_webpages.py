@@ -45,6 +45,40 @@ class SearchWithSelenium(SeleniumSearch):
                 "type": UserInput.OPTION_TEXT_LARGE,
                 "help": "List of urls"
             },
+            "advanced-options-toggle": {
+                "type": UserInput.OPTION_CHOICE,
+                "help": "Show advanced options",
+                "options": {
+                    "false": "No",
+                    "true": "Yes"
+                },
+                "default": "false"
+            },
+            "intro-cookies": {
+                "type": UserInput.OPTION_INFO,
+                "help": "The following options can be used to add user cookies to the browser. This can be useful for sites that require a login or that show cookie "
+                        "walls before allowing access to the site content. These options may not work for all sites and may lead to unexpected results, such as "
+                        "missing screenshots or incomplete page loads. *This may also result in blocked access to some sites or even banning*. You can use tools such as "
+                        "[Cookie-Editor](https://addons.mozilla.org/en-US/firefox/addon/cookie-editor/) to copy your brower's cookies.",
+                "requires": "advanced-options-toggle==true"
+            },
+            "cookies-toggle": {
+                "type": UserInput.OPTION_CHOICE,
+                "help": "Upload cookies format",
+                "options": {
+                    "none": "Don't add user cookies",
+                    "json": "Add user cookies in JSON format",
+                    },
+                "default": "none",
+                "requires": "advanced-options-toggle==true"
+            },
+            "add_user_cookies_json": {
+                "type": UserInput.OPTION_TEXT_JSON,
+                "help": "Cookies in JSON format",
+                "default": [],
+                "tooltip": 'e.g. [{"name": "cookie1", "value": "value1", "domain": ".example.com"}, {"name": "cookie2", "value": "value2", "domain": ".example.com"}]',
+                "requires": ["advanced-options-toggle==true", "cookies-toggle==json"],
+            },
 
         }
         if config.get("selenium.display_advanced_options", default=False):
@@ -68,6 +102,9 @@ class SearchWithSelenium(SeleniumSearch):
         """
         scrape_additional_subpages = self.parameters.get("subpages", 0)
         urls_to_scrape = [{'url':url, 'base_url':url, 'num_additional_subpages': scrape_additional_subpages, 'subpage_links':[]} for url in query.get('urls')]
+
+        # Cookies
+        user_cookies = self.parameters.get("add_user_cookies_json", []) if self.parameters.get("cookies-toggle") == "json" else []
 
         # Do not scrape the same site twice
         scraped_urls = set()
@@ -110,7 +147,7 @@ class SearchWithSelenium(SeleniumSearch):
             while attempts < 2:
                 attempts += 1
                 try:
-                    scraped_page = self.simple_scrape_page(url, extract_links=True)
+                    scraped_page = self.simple_scrape_page(url, extract_links=True, user_cookies=user_cookies)
                 except Exception as e:
                     self.dataset.log('Url %s unable to be scraped with error: %s' % (url, str(e)))
                     self.restart_selenium()
@@ -168,7 +205,7 @@ class SearchWithSelenium(SeleniumSearch):
 
                     result['embedded_iframes'].append(link)
                     try:
-                        iframe_page = self.simple_scrape_page(link, extract_links=True)
+                        iframe_page = self.simple_scrape_page(link, extract_links=True, user_cookies=user_cookies)
                     except Exception as e:
                         self.dataset.log(f"Unable to collect iframe page source found on {scraped_page.get('final_url')}: {link} with error: {str(e)}")
                         continue
@@ -187,9 +224,14 @@ class SearchWithSelenium(SeleniumSearch):
                     # Check if any link from base_url are available
                     if not url_obj['subpage_links']:
                         # If not, use this pages links collected above
-                        # TODO could also use selenium detected links; results vary, check as they are also being stored
+                        # Format selenium_links to match scraped_links for deduping
+                        selenium_links = [{'url': link} for link in result['selenium_links']]
+                        # Combine and dedup selenium and beautifulsoup links
+                        combined_links = {link['url']: link for link in (selenium_links + result['scraped_links'])}.values()
+
                         # Randomize links (else we end up with mostly menu items at the top of webpages)
-                        random.shuffle(links)
+                        random.shuffle(list(combined_links))
+                        links = list(combined_links)
                     else:
                         links = url_obj['subpage_links']
 
@@ -294,5 +336,7 @@ class SearchWithSelenium(SeleniumSearch):
 
         return {
             "urls": validated_urls,
-            "subpages": query.get("subpages", 0)
+            "subpages": query.get("subpages", 0),
+            "cookies-toggle": query.get("cookies-toggle", "none"),
+            "add_user_cookies_json": query.get("add_user_cookies_json", []) if query.get("cookies-toggle") == "json" else []
             }
