@@ -1621,9 +1621,9 @@ class SeleniumSearch(SeleniumWrapper, Search, metaclass=abc.ABCMeta):
         "selenium.max_sites": {
             "type": UserInput.OPTION_TEXT,
             "default": 120,
-            "help": "Posts per page",
+            "help": "Max site per dataset",
             "coerce_type": int,
-            "tooltip": "Posts to display per page"
+            "tooltip": "Maximum number of sites to scrape per dataset; can be overwritten by specific processors",
         },
         "selenium.selenium_executable_path": {
             "type": UserInput.OPTION_TEXT,
