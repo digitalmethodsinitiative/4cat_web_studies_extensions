@@ -187,9 +187,14 @@ class SearchWithSelenium(SeleniumSearch):
                     # Check if any link from base_url are available
                     if not url_obj['subpage_links']:
                         # If not, use this pages links collected above
-                        # TODO could also use selenium detected links; results vary, check as they are also being stored
+                        # Format selenium_links to match scraped_links for deduping
+                        selenium_links = [{'url': link} for link in result['selenium_links']]
+                        # Combine and dedup selenium and beautifulsoup links
+                        combined_links = {link['url']: link for link in (selenium_links + result['scraped_links'])}.values()
+
                         # Randomize links (else we end up with mostly menu items at the top of webpages)
-                        random.shuffle(links)
+                        random.shuffle(list(combined_links))
+                        links = list(combined_links)
                     else:
                         links = url_obj['subpage_links']
 
