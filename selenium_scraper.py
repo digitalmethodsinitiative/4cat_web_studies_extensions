@@ -654,12 +654,14 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
 
         try:
             # Create Firefox service with configurable geckodriver path
-            service_kwargs = {}
+            service_kwargs = {"log_output": str(self.config.get("PATH_LOGS").joinpath('geckodriver.log'))}
             geckodriver_path = self.config.get('selenium.selenium_executable_path', '/usr/local/bin/geckodriver')
             if geckodriver_path and os.path.exists(geckodriver_path):
                 service_kwargs['executable_path'] = geckodriver_path
                 self.selenium_log.debug(f"Using custom geckodriver: {geckodriver_path}")
             
+            self.selenium_log.debug("Selenium env: DISPLAY=%s, LIBGL_ALWAYS_SOFTWARE=%s", os.environ.get('DISPLAY'), os.environ.get('LIBGL_ALWAYS_SOFTWARE'))
+            self.selenium_log.debug("Will start geckodriver with kwargs: %s", service_kwargs)
             service = FirefoxService(**service_kwargs)
             
             # Create Firefox driver
@@ -671,6 +673,20 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         except (SessionNotCreatedException, WebDriverException) as e:
             self.selenium_log.error(f"Error starting Firefox driver: {e}")
             raise ProcessorException("Could not connect to browser (%s)." % str(e))
+        except Exception as e:
+            self.selenium_log.error(f"Unexpected error starting Firefox driver: {e}")
+            try:
+                gl = str(self.config.get("PATH_LOGS").joinpath('geckodriver.log'))
+                if os.path.exists(gl):
+                    with open(gl,'rb') as f:
+                        f.seek(0,2)
+                        size = f.tell()
+                        f.seek(max(0, size-20000))
+                        tail = f.read().decode('utf-8', errors='replace')
+                    self.selenium_log.error("Geckodriver tail:\n%s", tail)
+            except Exception:
+                pass
+            raise ProcessorException("Unexpected error starting browser: %s" % str(e))
                 
         driver_time = time.time() - driver_start        
         self.selenium_log.info(f"Firefox driver creation took: {driver_time:.2f}s (PID: {self.driver.service.process.pid})")
