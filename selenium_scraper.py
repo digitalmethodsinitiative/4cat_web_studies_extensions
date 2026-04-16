@@ -404,7 +404,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         self.selenium_log.info(f"Current cookies: {self.driver.get_cookies() if self.driver else 'N/A'}")
         return success, errors
 
-    def simple_scrape_page(self, url, extract_links=False, title_404_strings='default'):
+    def simple_scrape_page(self, url, extract_links=False, title_404_strings='default', wait=0, max_attempts=1, user_cookies=None):
         """
         Simple helper to scrape url. Returns a dictionary containing basic results from scrape including final_url,
         page_title, and page_source otherwise False if the page did not advance (self.check_for_movement() failed).
@@ -420,35 +420,77 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
                       Returns false if no movement was detected
         """
 
-        self.reset_current_page()
-        self.driver.get(url)
-
-        if self.check_for_movement():
-
-            results = self.collect_results(url, extract_links, title_404_strings)
-            return results
-
+        get_success, errors = self.get_with_error_handling(url, cookie_jar=user_cookies, max_attempts=max_attempts, wait=wait, restart_browser=True)
+        if get_success:
+            result = self.collect_results(url, extract_links, title_404_strings)
+            if errors:
+                result['errors'].extend(errors)
+            return result
         else:
-            raise Exception("Failed to navigate to new page; check url is not the same as previous url")
+            if errors:
+                return {'errors': errors}
+            return False
+
 
     def collect_results(self, url, extract_links=False, title_404_strings='default'):
+        """
+        Collect results from the current page. Returns a dictionary containing basic results from scrape including final_url,
+        page_title, and page_source. Optionally can include links if extract_links is True. Handles errors from driver.title, driver.current_url, and driver.page_source gracefully by logging the error and including it in the returned dictionary under an 'errors' key as a list of error messages. Note that if an error occurs when trying to access any of these properties, the corresponding value in the returned dictionary will be an empty string.
+
+        :param str url:  url as string; beginning with scheme (e.g., http, https)
+        :param bool extract_links:  Whether to extract links from the page
+        :param List title_404_strings:  List of strings representing possible 404 text to be compared with driver.title
+        :return dict: A dictionary containing basic results from scrape including final_url, page_title, and page_source.
+        """
+        errors = []
+        try:
+            detected_404 = self.check_for_404(title_404_strings)
+        except Exception as e:
+            self.selenium_log.warning(f"Error checking for 404: {e}")
+            errors.append(e)
+            detected_404 = False
+        try:
+            title = self.driver.title
+        except Exception as e:
+            self.selenium_log.warning(f"Error getting page title: {e}")
+            errors.append(e)
+            title = ""
+        try:
+            final_url = self.driver.current_url
+        except Exception as e:
+            self.selenium_log.warning(f"Error getting final URL: {e}")
+            errors.append(e)
+            final_url = ""
+        try:
+            page_source = self.driver.page_source
+        except Exception as e:
+            self.selenium_log.warning(f"Error getting page source: {e}")
+            errors.append(e)
+            page_source = ""
 
         result = {
             'original_url': url,
-            'detected_404': self.check_for_404(title_404_strings),
-            'page_title': self.driver.title,
-            'final_url': self.driver.current_url,
-            'page_source': self.driver.page_source,
+            'detected_404': detected_404,
+            'page_title': title,
+            'final_url': final_url,
+            'page_source': page_source,
+            'errors': errors
             }
 
         if extract_links:
-            result['links'] = self.collect_links()
+            try:
+                result['links'] = self.collect_links()
+            except Exception as e:
+                self.selenium_log.warning(f"Error collecting links: {e}")
+                result['errors'].append(e)
+
+        result["success"] = True if final_url and page_source and not detected_404 else False
 
         return result
 
     def collect_links(self):
         """
-
+        Collect all links on the current page. Returns a list of URLs (strings).
         """
         if self.driver is None:
             raise ProcessorException('Selenium Drive not yet started: Cannot collect links')
