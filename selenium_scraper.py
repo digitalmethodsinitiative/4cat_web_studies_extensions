@@ -61,6 +61,9 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
     consecutive_errors = 0
     num_consecutive_errors_before_restart = 3
 
+    _temp_profile_path = None
+    _temp_profile_is_temp = False
+
     def setup(self, config):
         """
         Setup the SeleniumWrapper. This injects the config object and sets up the logger.
@@ -117,21 +120,69 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
     def add_cookies(driver, cookies, url=None):
         """
         Add a cookie or list of cookies to a Selenium `driver`.
+
+        Tries three strategies per cookie to maximise compatibility across driver versions:
+          1. Full fidelity  — cookie dict as-is (expiry coerced to int).
+          2. W3C pruned     — drop keys not in the W3C WebDriver spec (handles drivers that
+                              reject unknown fields); sameSite is included here since modern
+                              geckodriver supports it.
+          3. Minimal safe   — name/value/domain/path/secure/httpOnly/expiry only (broadest
+                              compatibility with older drivers).
+
         cookies: dict or list of dicts. Each cookie must include 'name' and 'value'.
-                Optional keys: 'domain', 'path', 'expiry' (unix seconds), 'secure', 'httpOnly'.
-        url: optional full URL (scheme+host) to navigate to first — required if cookie domain must match.
+                 Optional keys: 'domain', 'path', 'expiry' (unix seconds), 'secure',
+                 'httpOnly', 'sameSite'.
+        url: optional full URL (scheme+host) to navigate to first — required if cookie
+             domain must match current page origin.
+
+        Returns a list of (cookie_name, exception) tuples for cookies that could not be
+        added under any strategy.
         """
         if not isinstance(cookies, (list, tuple)):
             cookies = [cookies]
         if url:
             driver.get(url)
-        allowed = {'name', 'value', 'path', 'domain', 'secure', 'httpOnly', 'expiry'}
+
+        # Keys accepted by modern W3C WebDriver (geckodriver ≥ 0.30, chromedriver ≥ 100)
+        _w3c_keys = {'name', 'value', 'path', 'domain', 'secure', 'httpOnly', 'expiry', 'sameSite'}
+        # Minimal set for older/stricter driver versions
+        _minimal_keys = {'name', 'value', 'path', 'domain', 'secure', 'httpOnly', 'expiry'}
+
+        failures = []
         for c in cookies:
             cookie = c.copy()
+            # Coerce expiry to int; remove it if not convertible
             if 'expiry' in cookie and cookie['expiry'] is not None:
-                cookie['expiry'] = int(cookie['expiry'])
-            cookie = {k: v for k, v in cookie.items() if k in allowed and v is not None}
-            driver.add_cookie(cookie)
+                try:
+                    cookie['expiry'] = int(cookie['expiry'])
+                except (TypeError, ValueError):
+                    del cookie['expiry']
+            name = cookie.get('name', '<unknown>')
+
+            # Strategy 1: full cookie dict as-is
+            try:
+                driver.add_cookie(cookie)
+                continue
+            except Exception:
+                pass
+
+            # Strategy 2: W3C keys (drops any custom/unknown fields the driver rejects)
+            try:
+                pruned_w3c = {k: v for k, v in cookie.items() if k in _w3c_keys and v is not None}
+                driver.add_cookie(pruned_w3c)
+                continue
+            except Exception:
+                pass
+
+            # Strategy 3: minimal safe set
+            try:
+                pruned_min = {k: v for k, v in cookie.items() if k in _minimal_keys and v is not None}
+                driver.add_cookie(pruned_min)
+                continue
+            except Exception as e_min:
+                failures.append((name, e_min))
+
+        return failures
 
     def _normalize_domain(self, domain: str):
         """Normalize a cookie domain (strip leading dot and lower-case)."""
@@ -206,15 +257,73 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             scheme = 'https' if any(c.get('secure') for c in cookies) else 'http'
             origin = f"{scheme}://{domain}"
 
+            # Navigate to domain once to set context for cookies; required for Selenium to accept them
+            self.driver.get(origin)  
+
             try:
-                # Use the static helper which may navigate if origin provided
-                type(self).add_cookies(self.driver, cookies, url=origin)
+                # Log cookie info for debugging (dataset log avoids raw values)
+                for ck in cookies:
+                    name = ck.get('name')
+                    cookie_domain = ck.get('domain', domain)
+                    path = ck.get('path', '/')
+                    secure = bool(ck.get('secure', False))
+                    httpOnly = bool(ck.get('httpOnly', False))
+                    expiry = ck.get('expiry', None)
+                    value = ck.get('value', None)
+                    value_len = len(str(value)) if value is not None else 0
+                    try:
+                        if hasattr(self, 'dataset') and self.dataset:
+                            self.dataset.log(f"Applying cookie '{name}' for domain '{cookie_domain}' (path={path}, secure={secure}, httpOnly={httpOnly}, expiry={expiry}, value_len={value_len})")
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self, 'selenium_log') and self.selenium_log:
+                            # debug-level log may contain full cookie dict for deeper inspection
+                            self.selenium_log.debug(f"Cookie detail for {cookie_domain}: {ck}")
+                    except Exception:
+                        pass
+
+                # Add cookies; add_cookies() returns (name, exc) pairs for any that failed
+                add_failures = type(self).add_cookies(self.driver, cookies)
                 self._cookie_domains_applied.add(domain)
+
+                # Log per-cookie failures (all three strategies exhausted)
+                for cookie_name, exc in (add_failures or []):
+                    msg = f"Failed to add cookie '{cookie_name}' for {domain} (all strategies): {type(exc).__name__}: {repr(exc)}"
+                    if self.selenium_log:
+                        self.selenium_log.warning(msg)
+                    errors.append(exc)
+
+                # Verify which cookies landed and log discrepancies to aid debugging
+                try:
+                    present = {c['name']: c for c in self.driver.get_cookies()}
+                    for ck in cookies:
+                        cname = ck.get('name')
+                        if not cname:
+                            continue
+                        cur = present.get(cname)
+                        if not cur:
+                            if self.selenium_log:
+                                self.selenium_log.warning(f"Cookie '{cname}' not present in browser after add (domain={domain})")
+                        else:
+                            diffs = []
+                            for key in ('value', 'domain', 'path', 'secure', 'httpOnly', 'expiry', 'sameSite'):
+                                req_val = ck.get(key)
+                                got_val = cur.get(key)
+                                if req_val is None and got_val is None:
+                                    continue
+                                if str(req_val) != str(got_val):
+                                    diffs.append((key, req_val, got_val))
+                            if diffs and self.selenium_log:
+                                self.selenium_log.debug(f"Cookie '{cname}' stored with diffs vs requested: {diffs}")
+                except Exception:
+                    pass
+
             except Exception as e:
-                # log and keep going
+                # Catch unexpected errors from the overall block (navigation, etc.)
                 try:
                     if hasattr(self, 'selenium_log') and self.selenium_log:
-                        self.selenium_log.warning(f"Error adding cookies for {domain}: {e}")
+                        self.selenium_log.warning(f"Error applying cookies for {domain}: {type(e).__name__}: {repr(e)}")
                 except Exception:
                     pass
                 errors.append(e)
@@ -292,7 +401,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
 
             if attempts < max_attempts:
                 time.sleep(wait)
-
+        self.selenium_log.info(f"Current cookies: {self.driver.get_cookies() if self.driver else 'N/A'}")
         return success, errors
 
     def simple_scrape_page(self, url, extract_links=False, title_404_strings='default'):
@@ -427,18 +536,32 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         # Configure virtual display vs headless mode
         self.setup_virtual_display_mode(options, "firefox")
        
-        # Firefox-specific optimizations - no profile creation for speed
+        # Resolve profile first so we can decide whether to start in private mode.
+        # A user-configured path takes priority; if none is set, create a fresh temp profile
+        # for this session so each job gets a clean, isolated browser context.
+        profile_path = None
+        try:
+            profile_path = self.get_profile()
+            if not profile_path:
+                profile_path = self._create_temp_profile()
+        except Exception as e:
+            self.selenium_log.warning(f"Could not resolve Firefox profile: {e}")
+
+        # Firefox-specific options
         options.add_argument('--no-sandbox')
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-extensions")
-        options.add_argument("--private")
-        
-        # Set preferences directly in options to avoid profile creation
+
+        # Base preferences
         options.set_preference("dom.webdriver.enabled", False)
         options.set_preference('useAutomationExtension', False)
-        options.set_preference("browser.privatebrowsing.autostart", True)
         options.set_preference("browser.cache.disk.enable", False)
         options.set_preference("browser.cache.memory.enable", False)
+
+        if not profile_path:
+            # No profile available — use private mode for basic session isolation
+            options.add_argument("--private")
+            options.set_preference("browser.privatebrowsing.autostart", True)
         # Optionally adjust prefs that reduce disruptive dialogs; kept behind config for stealth
         if self.config.get('selenium.reduce_dialog_prefs', False):
             options.set_preference("dom.webnotifications.enabled", False)
@@ -504,14 +627,10 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             options.binary_location = firefox_binary
             self.selenium_log.info(f"Using custom Firefox binary: {firefox_binary}")
 
-        # Use configured/overridden profile via get_profile()
-        try:
-            profile_path = self.get_profile()
-            if profile_path and os.path.exists(profile_path):
-                options.add_argument(f'--profile={profile_path}')
-                self.selenium_log.info(f"Using custom Firefox profile: {profile_path}")
-        except Exception as e:
-            self.selenium_log.debug(f"No Firefox profile provided via get_profile(): {e}")
+        # Apply the resolved profile (user-provided or temp)
+        if profile_path:
+            options.add_argument(f'--profile={profile_path}')
+            self.selenium_log.info(f"Using Firefox profile: {profile_path}")
 
         try:
             # Create Firefox service with configurable geckodriver path
@@ -691,6 +810,73 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             self.selenium_log.warning(f"get_profile() error: {e}")
             return None
         
+    def _create_temp_profile(self):
+        """
+        Create a fresh, isolated browser profile directory for this session.
+
+        The path is derived from PATH_DATA, the dataset key (if available) and the browser
+        type, so the directory name is predictable and easy to audit/clean up manually.
+        The caller is responsible for passing the path to the browser (e.g. via --profile).
+
+        Sets self._temp_profile_path and self._temp_profile_is_temp = True.
+
+        :return str: Absolute path to the created profile directory.
+        """
+        # Build a human-readable, collision-resistant name
+        dataset_key = getattr(self.dataset, 'key', None) if hasattr(self, 'dataset') else None
+        browser = self.browser or 'firefox'
+        if dataset_key:
+            profile_name = f"{dataset_key}_{browser}_temp_profile"
+        else:
+            # Fallback: timestamp + pid so concurrent workers don't collide
+            import datetime
+            profile_name = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{os.getpid()}_{browser}_temp_profile"
+
+        try:
+            base_dir = self.config.get('PATH_DATA')
+            profile_path = str(base_dir.joinpath(profile_name))
+        except Exception:
+            # Last resort: system temp dir
+            import tempfile
+            profile_path = os.path.join(tempfile.gettempdir(), profile_name)
+
+        os.makedirs(profile_path, exist_ok=True)
+        self._temp_profile_path = profile_path
+        self._temp_profile_is_temp = True
+        self.selenium_log.info(f"Created temporary Firefox profile: {profile_path}")
+        try:
+            if hasattr(self, 'dataset') and self.dataset:
+                self.dataset.log(f"Created temporary Firefox profile: {profile_path}")
+        except Exception:
+            pass
+        return profile_path
+
+    def _remove_temp_profile(self):
+        """
+        Remove the temporary profile directory created by _create_temp_profile(), if any.
+        Only removes directories we created ourselves (self._temp_profile_is_temp == True).
+        User-provided profile paths are never deleted.
+        """
+        if not self._temp_profile_is_temp or not self._temp_profile_path:
+            return
+        path = self._temp_profile_path
+        self._temp_profile_path = None
+        self._temp_profile_is_temp = False
+        if not os.path.exists(path):
+            return
+        try:
+            shutil.rmtree(path, ignore_errors=False)
+            self.selenium_log.info(f"Removed temporary Firefox profile: {path}")
+        except Exception as e:
+            # On Windows, Firefox may briefly hold file locks after quit(); retry once
+            self.selenium_log.warning(f"Could not remove temp profile on first attempt ({e}); retrying in 2s")
+            time.sleep(2)
+            shutil.rmtree(path, ignore_errors=True)
+            if not os.path.exists(path):
+                self.selenium_log.info(f"Removed temporary Firefox profile (retry): {path}")
+            else:
+                self.selenium_log.warning(f"Temp profile may still exist at {path}; manual cleanup may be needed")
+
     def apply_common_driver_config(self):
         """
         Apply common driver configuration after driver creation.
@@ -742,6 +928,9 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
 
         # Stop virtual display (only if we started it)
         self.stop_virtual_display()
+
+        # Remove temp profile if we created it for this session
+        self._remove_temp_profile()
 
     def restart_selenium(self, eager=None, kill_browser=False):
         """
