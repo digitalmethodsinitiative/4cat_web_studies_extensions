@@ -228,16 +228,16 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         """
         errors = []
         if not cookie_jar:
-            return errors
+            return [Exception("No cookies provided in cookie_jar")]
         if not self.driver:
-            return errors
+            return [Exception("Selenium driver not initialized")]
 
         try:
             host = urlparse(url).hostname
         except Exception:
             host = None
         if not host:
-            return errors
+            return [Exception("Invalid URL or unable to extract hostname")]
 
         grouped = self._group_cookies_by_domain(cookie_jar, default_host=host)
         # Ensure cache exists
@@ -261,28 +261,6 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
             self.driver.get(origin)  
 
             try:
-                # Log cookie info for debugging (dataset log avoids raw values)
-                for ck in cookies:
-                    name = ck.get('name')
-                    cookie_domain = ck.get('domain', domain)
-                    path = ck.get('path', '/')
-                    secure = bool(ck.get('secure', False))
-                    httpOnly = bool(ck.get('httpOnly', False))
-                    expiry = ck.get('expiry', None)
-                    value = ck.get('value', None)
-                    value_len = len(str(value)) if value is not None else 0
-                    try:
-                        if hasattr(self, 'dataset') and self.dataset:
-                            self.dataset.log(f"Applying cookie '{name}' for domain '{cookie_domain}' (path={path}, secure={secure}, httpOnly={httpOnly}, expiry={expiry}, value_len={value_len})")
-                    except Exception:
-                        pass
-                    try:
-                        if hasattr(self, 'selenium_log') and self.selenium_log:
-                            # debug-level log may contain full cookie dict for deeper inspection
-                            self.selenium_log.debug(f"Cookie detail for {cookie_domain}: {ck}")
-                    except Exception:
-                        pass
-
                 # Add cookies; add_cookies() returns (name, exc) pairs for any that failed
                 add_failures = type(self).add_cookies(self.driver, cookies)
                 self._cookie_domains_applied.add(domain)
@@ -295,29 +273,29 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
                     errors.append(exc)
 
                 # Verify which cookies landed and log discrepancies to aid debugging
-                try:
-                    present = {c['name']: c for c in self.driver.get_cookies()}
-                    for ck in cookies:
-                        cname = ck.get('name')
-                        if not cname:
-                            continue
-                        cur = present.get(cname)
-                        if not cur:
-                            if self.selenium_log:
+                if hasattr(self, 'selenium_log') and self.selenium_log and self.selenium_log.isEnabledFor(logging.DEBUG):
+                    try:
+                        present = {c['name']: c for c in self.driver.get_cookies()}
+                        for ck in cookies:
+                            cname = ck.get('name')
+                            if not cname:
+                                continue
+                            cur = present.get(cname)
+                            if not cur:
                                 self.selenium_log.warning(f"Cookie '{cname}' not present in browser after add (domain={domain})")
-                        else:
-                            diffs = []
-                            for key in ('value', 'domain', 'path', 'secure', 'httpOnly', 'expiry', 'sameSite'):
-                                req_val = ck.get(key)
-                                got_val = cur.get(key)
-                                if req_val is None and got_val is None:
-                                    continue
-                                if str(req_val) != str(got_val):
-                                    diffs.append((key, req_val, got_val))
-                            if diffs and self.selenium_log:
-                                self.selenium_log.debug(f"Cookie '{cname}' stored with diffs vs requested: {diffs}")
-                except Exception:
-                    pass
+                            else:
+                                diffs = []
+                                for key in ('value', 'domain', 'path', 'secure', 'httpOnly', 'expiry', 'sameSite'):
+                                    req_val = ck.get(key)
+                                    got_val = cur.get(key)
+                                    if req_val is None and got_val is None:
+                                        continue
+                                    if str(req_val) != str(got_val):
+                                        diffs.append((key, req_val, got_val))
+                                if diffs:
+                                    self.selenium_log.debug(f"Cookie '{cname}' stored with diffs vs requested: {diffs}")
+                    except Exception as e:
+                        self.selenium_log.warning(f"Error verifying cookies for {domain}: {type(e).__name__}: {repr(e)}")
 
             except Exception as e:
                 # Catch unexpected errors from the overall block (navigation, etc.)
@@ -401,7 +379,7 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
 
             if attempts < max_attempts:
                 time.sleep(wait)
-        self.selenium_log.info(f"Current cookies: {self.driver.get_cookies() if self.driver else 'N/A'}")
+        # self.selenium_log.debug(f"Current cookies: {self.driver.get_cookies() if self.driver else 'N/A'}")
         return success, errors
 
     def simple_scrape_page(self, url, extract_links=False, title_404_strings='default', wait=0, max_attempts=1, user_cookies=None):
