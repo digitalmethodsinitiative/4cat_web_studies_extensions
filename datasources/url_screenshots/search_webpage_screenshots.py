@@ -123,6 +123,7 @@ class ScreenshotWithSelenium(SeleniumSearch):
                 "default": [],
                 "tooltip": 'e.g. [{"name": "cookie1", "value": "value1", "domain": ".example.com"}, {"name": "cookie2", "value": "value2", "domain": ".example.com"}]',
                 "requires": ["advanced-options-toggle==true", "cookies-toggle==json"],
+                "sensitive": True,
             },
         }
         if config.get('selenium.firefox_extensions') and config.get('selenium.firefox_extensions', default={}).get('i_dont_care_about_cookies', {}).get('path'):

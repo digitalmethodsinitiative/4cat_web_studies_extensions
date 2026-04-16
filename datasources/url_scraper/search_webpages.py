@@ -78,6 +78,7 @@ class SearchWithSelenium(SeleniumSearch):
                 "default": [],
                 "tooltip": 'e.g. [{"name": "cookie1", "value": "value1", "domain": ".example.com"}, {"name": "cookie2", "value": "value2", "domain": ".example.com"}]',
                 "requires": ["advanced-options-toggle==true", "cookies-toggle==json"],
+                "sensitive": True,
             },
 
         }
