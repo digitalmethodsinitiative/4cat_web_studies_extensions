@@ -7,6 +7,7 @@ import re
 import sys
 import os
 import shutil
+import urllib.request
 
 def find_fourcat_root():
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -240,24 +241,82 @@ if __name__ == "__main__":
 		command = f"rm geckodriver-{GECKODRIVER_VERSION}-linux64.tar.gz"
 		run_command(command, "Error removing temp download files")
 
-	# Install latest firefox
+	# Install latest firefox via Mozilla APT repository (Debian-based recommended method)
+	# See: https://packages.mozilla.org/ for the official instructions and signing key
 	if not firefox_installed:
 		print("Installing the latest version of Firefox")
-		FIREFOX_SETUP = "firefox-setup.tar.xz"
-		command = "apt-get purge firefox"
+		# https://support.mozilla.org/en-US/kb/install-firefox-linux
+		command = "apt-get purge -y firefox"
 		run_command(command, "Error removing existing firefox")
 
-		command = f'wget -O {FIREFOX_SETUP} https://download.mozilla.org/?product=firefox-latest&os=linux64'
-		run_command(command, "Error downloading firefox")
+		# Ensure the apt keyrings directory exists
+		keyrings_dir = "/etc/apt/keyrings"
+		try:
+			os.makedirs(keyrings_dir, mode=0o755, exist_ok=True)
+		except Exception as e:
+			print(f"Warning: Could not create {keyrings_dir}: {e}")
 
-		command = f"tar xf {FIREFOX_SETUP} -C /opt/"
-		run_command(command, "Error unzipping firefox")
+		# Import Mozilla APT repository signing key
+		key_url = "https://packages.mozilla.org/apt/repo-signing-key.gpg"
+		key_path = os.path.join(keyrings_dir, "packages.mozilla.org.asc")
+		try:
+			with urllib.request.urlopen(key_url) as resp:
+				key_data = resp.read()
+			with open(key_path, "wb") as kf:
+				kf.write(key_data)
+			print(f"Imported Mozilla APT repository signing key to {key_path}")
+		except Exception as e:
+			print(f"Error importing Mozilla signing key: {e}")
+			exit(1)
 
-		command = "ln -sf /opt/firefox/firefox /usr/bin/firefox"
-		run_command(command, "Error creating symbolic link to firefox")
+		# Add Mozilla APT repository (both modern .sources and legacy .list for compatibility)
+		mozilla_sources = "/etc/apt/sources.list.d/mozilla.sources"
+		mozilla_list = "/etc/apt/sources.list.d/mozilla.list"
+		try:
+			sources_content = (
+				"Types: deb\n"
+				"URIs: https://packages.mozilla.org/apt\n"
+				"Suites: mozilla\n"
+				"Components: main\n"
+				"Signed-By: /etc/apt/keyrings/packages.mozilla.org.asc\n"
+			)
+			with open(mozilla_sources, "w") as sf:
+				sf.write(sources_content)
+			print(f"Wrote {mozilla_sources}")
+		except Exception as e:
+			print(f"Warning: Could not write {mozilla_sources}: {e}")
 
-		command = f"rm {FIREFOX_SETUP}"
-		run_command(command, "Error removing temp download files")
+		try:
+			deb_line = "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main\n"
+			existing = ""
+			if os.path.exists(mozilla_list):
+				with open(mozilla_list, "r", encoding="utf-8") as lf:
+					existing = lf.read()
+			if deb_line.strip() not in existing:
+				with open(mozilla_list, "a", encoding="utf-8") as lf:
+					lf.write(deb_line)
+			print(f"Wrote {mozilla_list}")
+		except Exception as e:
+			print(f"Warning: Could not write {mozilla_list}: {e}")
+
+		# Prioritize packages from Mozilla repo
+		try:
+			pref_path = "/etc/apt/preferences.d/mozilla"
+			pref_content = (
+				"Package: *\n"
+				"Pin: origin packages.mozilla.org\n"
+				"Pin-Priority: 1000\n"
+			)
+			with open(pref_path, "w", encoding="utf-8") as pf:
+				pf.write(pref_content)
+			print(f"Wrote {pref_path}")
+		except Exception as e:
+			print(f"Warning: Could not write apt preferences: {e}")
+
+		# Update and install firefox
+		print("Updating apt package list and installing firefox")
+		run_command("apt-get update", "Error updating package list")
+		run_command("apt-get install -y firefox", "Error installing firefox")
 
 	if not args.no_pip:
 		pip_install()
