@@ -169,11 +169,18 @@ if __name__ == "__main__":
 		print("Firefox, Geckodriver, and Xvfb already installed. No action required.")
 		exit(0)
 
-	# Install additional packages
+	# Install additional packages (including fonts and shaping libraries for wide script coverage)
 	print("Ensuring required packages are installed")
-	PACKAGES = "wget bzip2 libgtk-3-0 libasound2 libdbus-glib-1-2 libx11-xcb1 libxtst6"
+	PACKAGES = "wget bzip2 libgtk-3-0 libasound2 libdbus-glib-1-2 libx11-xcb1 libxtst6 fontconfig libfreetype6 libharfbuzz0b libpango-1.0-0 fonts-noto-cjk fonts-noto-color-emoji fonts-nanum ttf-wqy-zenhei fonts-dejavu-core fonts-liberation"
 	install_apt_packages(PACKAGES, required=True)
 	print(f"Installed packages: {PACKAGES}")
+	# Rebuild font cache so newly installed fonts are immediately available to Firefox
+	try:
+		run_command("fc-cache -f -v", "Error rebuilding font cache")
+		print("Font cache rebuilt")
+	except Exception:
+		# continue even if fc-cache fails
+		print("Warning: Could not rebuild font cache automatically; you may need to run `fc-cache -f -v` manually.")
 
 	# Attempt to install optional Xvfb (non-fatal if it fails)
 	xvfb_available = shutil.which("Xvfb") is not None
