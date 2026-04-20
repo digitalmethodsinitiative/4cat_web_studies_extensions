@@ -133,6 +133,21 @@ if __name__ == "__main__":
 	if sys.platform != "linux":
 		print("This installation is only for Linux OS\nPlease download Firefox and Geckodriver manually.")
 		exit(1)
+	# Ensure running with root privileges and that APT is available for backend installs
+	if args.component in ["backend", "both"]:
+		# Require root (Linux only)
+		try:
+			is_root = (os.geteuid() == 0)
+		except AttributeError:
+			is_root = False
+		if not is_root:
+			print("This installer must be run with root privileges (sudo). Please re-run as root or with sudo.")
+			exit(1)
+		# Check for apt availability
+		if shutil.which("apt-get") is None and shutil.which("apt") is None:
+			print("APT (apt-get/apt) not found. This installer requires apt on Debian-based systems.")
+			print("Please install Firefox and geckodriver manually following Mozilla's instructions: https://packages.mozilla.org/")
+			exit(1)
 
 	firefox_installed = False
 	geckodriver_installed = False
