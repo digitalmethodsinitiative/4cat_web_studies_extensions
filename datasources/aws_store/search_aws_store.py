@@ -527,6 +527,11 @@ class AwsStoreCategories(BasicWorker):
         """
         Collect AWS Store query options and store them in database via Selenium
         """
+        if "aws-store" not in self.config.get("datasources.enabled"):
+            # Datasource no longer enabled; delete job if it exists and skip
+            self.job.finish(delete=True)
+            return
+        
         categories_url = SearchAwsStore.base_url
         selenium_wrapper = SeleniumWrapper()
         if not selenium_wrapper.is_selenium_available(config=self.config):
