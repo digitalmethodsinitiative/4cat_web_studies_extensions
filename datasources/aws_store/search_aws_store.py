@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta
+from datetime import datetime
+import json
 import re
 import urllib.parse
 from bs4 import BeautifulSoup
@@ -14,7 +15,6 @@ from common.lib.exceptions import ProcessorInterruptedException, ProcessorExcept
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
 from extensions.web_studies.selenium_scraper import SeleniumSearch
-from common.lib.helpers import url_to_hash
 
 
 class SearchAwsStore(SeleniumSearch):
@@ -512,6 +512,13 @@ class AwsStoreCategories(BasicWorker):
     # /marketplace/b/<uuid> — category browse pages. The UUID also doubles as
     # the value of the `?category=` filter on /marketplace/search/. 
     category_link_re = re.compile(r"^/marketplace/b/([0-9a-fA-F-]{30,})")
+   
+    # Search-page sidebar filters we surface as datasource options.
+    sidebar_filter_map = {
+        "CREATOR-filter": ("Vendors", "All vendors"),
+        "PRICING_MODEL-filter": ("Pricing Models", "All pricing models"),
+        "FULFILLMENT_OPTION_TYPE-filter": ("Delivery Methods", "All delivery methods"),
+    }
 
     @classmethod
     def ensure_job(cls, config=None):
@@ -526,49 +533,69 @@ class AwsStoreCategories(BasicWorker):
     def work(self):
         """
         Collect AWS Store query options and store them in database via Selenium
+
+        Two pages are needed: the homepage (for the full category list) and 
+        /marketplace/search/ (for the vendor, pricing-model, and delivery-method 
+        filters in the left sidebar). Each extraction is wrapped so one page's 
+        failure does not lose the other's results.
         """
         if "aws-store" not in self.config.get("datasources.enabled"):
             # Datasource no longer enabled; delete job if it exists and skip
             self.job.finish(delete=True)
             return
-        
-        categories_url = SearchAwsStore.base_url
         selenium_wrapper = SeleniumWrapper()
         if not selenium_wrapper.is_selenium_available(config=self.config):
             raise ProcessorException("Selenium is not available; cannot collect categories from AWS Store")
 
         selenium_wrapper.start_selenium(config=self.config)
-        # Backend runs get_options for each processor on init; but does not seem to have logging
-        selenium_wrapper.selenium_log.info(f"Fetching category options from AWS Store {categories_url}")
-        selenium_wrapper.driver.get(categories_url)
-        if not selenium_wrapper.check_for_movement():
-            raise ProcessorException("Failed to load AWS Store")
-
-        if not selenium_wrapper.check_page_is_loaded():
-            raise ProcessorException("AWS Store did not load and timed out")
-
-        selenium_wrapper.scroll_down_page_to_load(60)
-
+        collected = {}
         try:
+            # Backend runs get_options for each processor on init; but does not seem to have logging
+            selenium_wrapper.selenium_log.info(f"Fetching category options from AWS Store {SearchAwsStore.base_url}")
+            selenium_wrapper.driver.get(SearchAwsStore.base_url)
+            if not selenium_wrapper.check_for_movement():
+                raise ProcessorException("Failed to load AWS Store")
+            if not selenium_wrapper.check_page_is_loaded():
+                raise ProcessorException("AWS Store did not load and timed out")
+            selenium_wrapper.scroll_down_page_to_load(60)
+
             try:
-                category_filters = self.get_category_filters(selenium_wrapper=selenium_wrapper, logger=self.log)
+                category_filters = self.get_category_filters(page_source=selenium_wrapper.driver.page_source, logger=self.log)
+                if category_filters:
+                    collected.update(category_filters)
             except Exception as e:
                 # falls back to a free-text "all categories"
                 # query when no cached filters are available.
                 self.log.error(f"Unexpected error collecting AWS Store categories ({type(e).__name__}: {e})")
-                category_filters = None
 
-            if category_filters and isinstance(category_filters, dict) and any(category_filters.values()):
-                self.log.info(f"Collected {len(category_filters)} query types with a total of {len(sum(category_filters.values(), []))} options for the AWS Store")
+            # Sidebar filters live on the search page rather than the homepage.
+            selenium_wrapper.selenium_log.info(f"Fetching sidebar filters from {SearchAwsStore.search_url}")
+            selenium_wrapper.driver.get(SearchAwsStore.search_url)
+            if selenium_wrapper.check_for_movement() and selenium_wrapper.check_page_is_loaded():
+                try:
+                    WebDriverWait(selenium_wrapper.driver, 20).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, '[data-test-selector="CREATOR-filter"]'))
+                    )
+
+                    sidebar_filters = self.get_sidebar_filters(page_source=selenium_wrapper.driver.page_source, logger=self.log)
+                    if sidebar_filters:
+                        collected.update(sidebar_filters)
+                except Exception as e:
+                    self.log.error(f"Unexpected error collecting AWS Store sidebar filters ({type(e).__name__}: {e})")
+            else:
+                self.log.warning("AWS Marketplace search page did not load; skipping sidebar filter collection")
+
+            if collected and any(collected.values()):
+                self.log.info(f"Collected {len(collected)} query types with a total of {len(sum(collected.values(), []))} options for the AWS Store")
                 # Update existing options with new data (replace whole sections to remove old options, but do not remove sections that are no longer collected at all due to UI/API changes)
                 old_options = self.config.get("cache.aws.query_options", {})
-                for filter_name, options in category_filters.items():
+                for filter_name, options in collected.items():
                     old_options[filter_name] = options
 
                 self.config.set("cache.aws.query_options", old_options)
                 self.config.set("cache.aws.query_options_updated_at", datetime.now().timestamp())
             else:
-                self.log.warning("Failed to collect category options from AWS Store")
+                self.log.warning("Failed to collect any filter options from AWS Store")
 
         except ProcessorException as e:
             self.log.error(f"Error collecting AWS Store categories: {e}")
@@ -579,7 +606,7 @@ class AwsStoreCategories(BasicWorker):
         return
 
     @staticmethod
-    def get_category_filters(selenium_wrapper, logger):
+    def get_category_filters(page_source, logger):
         """
         Get category filters from the AWS Marketplace homepage.
 
@@ -591,14 +618,11 @@ class AwsStoreCategories(BasicWorker):
         label; we let later occurrences win so the footer's canonical name is
         what surfaces in the UI.
 
-        :param selenium_wrapper:  SeleniumWrapper
+        :param page_source:  The HTML source of the homepage
         :param logger:  Logger
         :return:  dict on success, None if no categories could be found
         """
-        # 2026-3: AWS updated UI and filters no longer exist in dropdowns, Vendors, Pricing Models, and Delivery Methods filters are now text-based with "Show all" options and only on search pages
-        # TODO: if required, add navigation and parse these from search pages; vendors (now publishers?) have show all and popup page with next buttons as well
-
-        soup = BeautifulSoup(selenium_wrapper.driver.page_source, "html.parser")
+        soup = BeautifulSoup(page_source, "html.parser")
 
         seen = {}
         for anchor in soup.find_all("a", href=True):
@@ -627,3 +651,66 @@ class AwsStoreCategories(BasicWorker):
             logger.info(f"AWS Marketplace: extracted {len(categories) - 1} categories from homepage links")
 
         return {"Categories": categories}
+
+    @staticmethod
+    def get_sidebar_filters(page_source, logger):
+        """
+        Get Vendor, Pricing Model, and Delivery Method filters from the
+        /marketplace/search/ sidebar.
+
+        Each sidebar filter renders its top ~10 options inline (the "Show all"
+        link behind the rest requires interaction we deliberately avoid).
+        Every visible option carries a `data-metric-meta-data` JSON attribute
+        AWS uses for click telemetry, of the form
+        `{"ComponentType": "...", "SubComponent": "<display name>",
+        "ComponentId": "<filter value>"}`. ComponentId is the exact value
+        AWS accepts for `?CREATOR=`, `?PRICING_MODEL=`, and
+        `?FULFILLMENT_OPTION_TYPE=`, so it doubles as our data-value.
+
+        The sidebar is hydrated client-side by AWS's React app — `page_source`
+        sampled too early returns the pre-hydration HTML where the filter
+        blocks do not yet exist (especially under headless Firefox). We wait
+        explicitly for the largest of the three blocks (CREATOR) to appear
+        before snapshotting; the others ship at the same time.
+
+        Returns the top-N visible options per filter only. Sufficient for the
+        common filters (PRICING_MODEL has ~5 values total, FULFILLMENT_OPTION_TYPE
+        a handful) and a useful subset for vendors, without the fragility of
+        clicking through the "Show all" popup.
+
+        :param page_source:  The HTML source of the search page 
+        :param logger:  Logger
+        :return:  dict mapping filter name -> list of {"name", "data-value"}
+        """
+        soup = BeautifulSoup(page_source, "html.parser")
+        result = {}
+
+        for selector, (filter_name, all_label) in AwsStoreCategories.sidebar_filter_map.items():
+            block = soup.find(attrs={"data-test-selector": selector})
+            if not block:
+                if logger:
+                    logger.warning(f"AWS Marketplace: sidebar block '{selector}' not found on search page")
+                continue
+
+            options = [{"name": all_label, "data-value": all_label}]
+            seen_ids = set()
+            for el in block.find_all(attrs={"data-metric-meta-data": True}):
+                try:
+                    meta = json.loads(el["data-metric-meta-data"])
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    continue
+                comp_id = meta.get("ComponentId")
+                name = meta.get("SubComponent")
+                if not comp_id or not name or comp_id in seen_ids:
+                    continue
+                seen_ids.add(comp_id)
+                options.append({"name": name, "data-value": comp_id})
+
+            if len(options) > 1:
+                result[filter_name] = options
+                if logger:
+                    logger.info(f"AWS Marketplace: extracted {len(options) - 1} {filter_name.lower()} from sidebar")
+            elif logger:
+                logger.warning(f"AWS Marketplace: no options parsed from {selector}")
+
+        return result
