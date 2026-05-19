@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta
 import re
-import json
-import urllib
+import urllib.parse
 from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 from selenium.common import exceptions as selenium_exceptions
@@ -510,6 +509,10 @@ class AwsStoreCategories(BasicWorker):
     """
     type = "aws-store-category-collector"  # job ID
 
+    # /marketplace/b/<uuid> — category browse pages. The UUID also doubles as
+    # the value of the `?category=` filter on /marketplace/search/. 
+    category_link_re = re.compile(r"^/marketplace/b/([0-9a-fA-F-]{30,})")
+
     @classmethod
     def ensure_job(cls, config=None):
         """
@@ -542,8 +545,15 @@ class AwsStoreCategories(BasicWorker):
         selenium_wrapper.scroll_down_page_to_load(60)
 
         try:
-            category_filters = self.get_category_filters(selenium_wrapper=selenium_wrapper, logger=self.log)
-            if category_filters:
+            try:
+                category_filters = self.get_category_filters(selenium_wrapper=selenium_wrapper, logger=self.log)
+            except Exception as e:
+                # falls back to a free-text "all categories"
+                # query when no cached filters are available.
+                self.log.error(f"Unexpected error collecting AWS Store categories ({type(e).__name__}: {e})")
+                category_filters = None
+
+            if category_filters and isinstance(category_filters, dict) and any(category_filters.values()):
                 self.log.info(f"Collected {len(category_filters)} query types with a total of {len(sum(category_filters.values(), []))} options for the AWS Store")
                 # Update existing options with new data (replace whole sections to remove old options, but do not remove sections that are no longer collected at all due to UI/API changes)
                 old_options = self.config.get("cache.aws.query_options", {})
@@ -566,81 +576,49 @@ class AwsStoreCategories(BasicWorker):
     @staticmethod
     def get_category_filters(selenium_wrapper, logger):
         """
-        Get category filters from AWS Store
+        Get category filters from the AWS Marketplace homepage.
+
+        AWS lists the full canonical set of categories in the homepage footer,
+        each as an anchor pointing at `/marketplace/b/<uuid>`. The UUID is also
+        accepted as `?category=<uuid>` on the search page, so we can use it
+        directly as the filter value. The same UUIDs reappear in the
+        "Popular Categories" grid above the footer, sometimes with a shorter
+        label; we let later occurrences win so the footer's canonical name is
+        what surfaces in the UI.
 
         :param selenium_wrapper:  SeleniumWrapper
         :param logger:  Logger
-        :return:  dict
+        :return:  dict on success, None if no categories could be found
         """
         # 2026-3: AWS updated UI and filters no longer exist in dropdowns, Vendors, Pricing Models, and Delivery Methods filters are now text-based with "Show all" options and only on search pages
         # TODO: if required, add navigation and parse these from search pages; vendors (now publishers?) have show all and popup page with next buttons as well
 
-        # Extract categories from embedded JSON
         soup = BeautifulSoup(selenium_wrapper.driver.page_source, "html.parser")
-        markers = [
-            ("var categoryMap = ", r"var categoryMap\s*="),
-        ]
-        category_data = AwsStoreCategories.parse_category_json(soup, markers=markers, log=logger, debug=True)
-        new_data = {
-            "Categories":[{'name': 'All categories', 'data-value': 'All categories'}],
-        }
-        # Looks like all we need are the english names and the data-value
-        for i, (k,v) in enumerate(category_data['categoryMessageMap']['en'].items()):
-            new_data["Categories"].append({"name": v, "data-value": k})
-        
-        return new_data
 
-    @staticmethod    
-    def parse_category_json(soup, markers=None, log=None, debug=False):
-        """
-        Parse JSON object from AWS Store.
-
-        Pass `debug=True` and `log=<logger>` to enable detailed diagnostics.
-        """
-        scripts = soup.find_all("script")
-        if debug and log:
-            log.info(f"Parsing JSON data from AWS Store, found {len(scripts)} script tags to check")
-
-        decoder = json.JSONDecoder()
-        for i, script in enumerate(scripts):
-            script_text = script.string or script.get_text() or script.decode_contents() or ""
-            if not script_text:
-                continue
-
-            marker_used = None
-            marker_match = None
-            for marker_name, marker_pattern in markers:
-                match = re.search(marker_pattern, script_text)
-                if match:
-                    marker_used = marker_name
-                    marker_match = match
-                    break
-
-            if not marker_match:
-                continue
-
-            if debug and log:
-                log.info(f"Script[{i}] contains {marker_used}; first 180 chars: {script_text[:180]!r}")
-
-            rhs = script_text[marker_match.end():].lstrip()
-
-            # Find first JSON object start
-            brace_pos = rhs.find("{")
-            if brace_pos == -1:
-                if debug and log:
-                    log.warning(f"Found {marker_used} in Script[{i}] but no '{{' after assignment")
-                continue
-
+        seen = {}
+        for anchor in soup.find_all("a", href=True):
             try:
-                parsed, _ = decoder.raw_decode(rhs[brace_pos:])
-                if debug and log:
-                    log.info(f"Successfully parsed JSON data from AWS Store using {marker_used} in Script[{i}]")
-                return parsed
-            except json.JSONDecodeError as e:
-                if debug and log:
-                    log.error(f"Failed JSON decode for Script[{i}] with {marker_used}: {e}")
+                path = urllib.parse.urlparse(anchor["href"]).path
+            except ValueError:
                 continue
+            match = AwsStoreCategories.category_link_re.match(path)
+            if not match:
+                continue
+            name = anchor.get_text(strip=True)
+            if not name:
+                continue
+            seen[match.group(1)] = name
 
-        if log:
-            log.error("Failed to find category JSON data from AWS Store")
-        return None
+        if not seen:
+            if logger:
+                logger.warning("AWS Marketplace: no /marketplace/b/<uuid> category links found on homepage")
+            return None
+
+        categories = [{"name": "All categories", "data-value": "All categories"}]
+        for uuid, name in sorted(seen.items(), key=lambda kv: kv[1].lower()):
+            categories.append({"name": name, "data-value": uuid})
+
+        if logger:
+            logger.info(f"AWS Marketplace: extracted {len(categories) - 1} categories from homepage links")
+
+        return {"Categories": categories}
