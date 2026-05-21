@@ -850,33 +850,53 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         """
         Create a fresh, isolated browser profile directory for this session.
 
-        The path is derived from PATH_DATA, the dataset key (if available) and the browser
-        type, so the directory name is predictable and easy to audit/clean up manually.
+        The directory name combines the dataset key (when available), a timestamp and the
+        browser type, so it is human-readable and easy to audit/clean up manually.
+
+        Firefox locks a profile while it is in use (via parent.lock/.parentlock) and
+        refuses to share one between instances, so the path must be unique per session.
+
         The caller is responsible for passing the path to the browser (e.g. via --profile).
 
         Sets self._temp_profile_path and self._temp_profile_is_temp = True.
 
         :return str: Absolute path to the created profile directory.
         """
-        # Build a human-readable, collision-resistant name
+        import datetime
+
+        # Build a human-readable name from the dataset key (if any), a timestamp and browser
         dataset_key = getattr(self.dataset, 'key', None) if hasattr(self, 'dataset') else None
         browser = self.browser or 'firefox'
+        timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
         if dataset_key:
-            profile_name = f"{dataset_key}_{browser}_temp_profile"
+            base_name = f"{dataset_key}_{timestamp}_{browser}_temp_profile"
         else:
-            # Fallback: timestamp + pid so concurrent workers don't collide
-            import datetime
-            profile_name = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{os.getpid()}_{browser}_temp_profile"
+            # No dataset key: add the pid to add some distinguishing characteristic
+            base_name = f"{timestamp}_{os.getpid()}_{browser}_temp_profile"
 
         try:
-            base_dir = self.config.get('PATH_DATA')
-            profile_path = str(base_dir.joinpath(profile_name))
+            base_dir = str(self.config.get('PATH_DATA'))
         except Exception:
             # Last resort: system temp dir
             import tempfile
-            profile_path = os.path.join(tempfile.gettempdir(), profile_name)
+            base_dir = tempfile.gettempdir()
 
-        os.makedirs(profile_path, exist_ok=True)
+        # Create the directory ourselves with an index suffix to guarantee a unique path.
+        profile_path = None
+        index = 0
+        while profile_path is None:
+            candidate = base_name if index == 0 else f"{base_name}_{index}"
+            candidate_path = os.path.join(base_dir, candidate)
+            try:
+                os.makedirs(candidate_path)
+                profile_path = candidate_path
+            except FileExistsError:
+                index += 1
+                if index > 1000:
+                    # fall back to a guaranteed-unique temp directory
+                    import tempfile
+                    profile_path = tempfile.mkdtemp(prefix=f"{base_name}_")
+
         self._temp_profile_path = profile_path
         self._temp_profile_is_temp = True
         self.selenium_log.info(f"Created temporary Firefox profile: {profile_path}")
