@@ -574,7 +574,7 @@ class AwsStoreCategories(BasicWorker):
             if selenium_wrapper.check_for_movement() and selenium_wrapper.check_page_is_loaded():
                 try:
                     WebDriverWait(selenium_wrapper.driver, 20).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, '[data-test-selector="CREATOR-filter"]'))
+                        EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="CREATOR-filter"]'))
                     )
 
                     sidebar_filters = self.get_sidebar_filters(page_source=selenium_wrapper.driver.page_source, logger=self.log)
@@ -662,8 +662,8 @@ class AwsStoreCategories(BasicWorker):
         link behind the rest requires interaction we deliberately avoid).
         Every visible option carries a `data-metric-meta-data` JSON attribute
         AWS uses for click telemetry, of the form
-        `{"ComponentType": "...", "SubComponent": "<display name>",
-        "ComponentId": "<filter value>"}`. ComponentId is the exact value
+        `{"componentType": "...", "subComponent": "<display name>",
+        "componentId": "<filter value>"}`. componentId is the exact value
         AWS accepts for `?CREATOR=`, `?PRICING_MODEL=`, and
         `?FULFILLMENT_OPTION_TYPE=`, so it doubles as our data-value.
 
@@ -686,7 +686,7 @@ class AwsStoreCategories(BasicWorker):
         result = {}
 
         for selector, (filter_name, all_label) in AwsStoreCategories.sidebar_filter_map.items():
-            block = soup.find(attrs={"data-test-selector": selector})
+            block = soup.find(attrs={"data-testid": selector})
             if not block:
                 if logger:
                     logger.warning(f"AWS Marketplace: sidebar block '{selector}' not found on search page")
@@ -699,8 +699,8 @@ class AwsStoreCategories(BasicWorker):
                     meta = json.loads(el["data-metric-meta-data"])
                 except (json.JSONDecodeError, TypeError, ValueError):
                     continue
-                comp_id = meta.get("ComponentId")
-                name = meta.get("SubComponent")
+                comp_id = meta.get("componentId")
+                name = meta.get("subComponent")
                 if not comp_id or not name or comp_id in seen_ids:
                     continue
                 seen_ids.add(comp_id)
