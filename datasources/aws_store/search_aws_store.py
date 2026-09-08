@@ -1,23 +1,55 @@
+"""
+Amazon Web Services (AWS) Marketplace data source.
+
+Until 2026-09 this data source drove a headless Firefox through
+aws.amazon.com/marketplace/search/ with Selenium and extracted results.
+
+It now calls the JSON service that page uses:
+    service  com.amazonaws.marketplace.discovery.api.v20200320
+    see      aws_marketplace_api.AwsMarketplaceApi
+
+The service is undocumented and unsupported, but needs no browser, no
+credentials and no cookies; it paginates 100 results per request instead of 20
+and it returns more per listing than the page displayed, including the full
+long description, the complete category and badge lists, and review counts and
+ratings.
+
+Because the endpoint is undocumented, responses are checked against a shallow
+contract (see the API client) and the fields this module treats as guaranteed
+are read by subscript rather than `.get()`, so that a change in AWS's response
+shape raises a MapItemException and reaches an operator through 4CAT's
+unmappable-item alerting instead of quietly producing empty columns. Fields that
+AWS legitimately omits per listing are marked MissingMappedField, so a reader can
+tell "AWS did not publish this" apart from "this is empty".
+
+Known limitations
+-----------------
+- `ai_listing_highlights` was generated in the web UI and is not available from
+  the API. The column is kept for continuity with datasets collected before the
+  switch, and is always marked missing on newly collected items.
+- `timestamp` is the collection time, not a listing publication date. AWS does
+  not expose the latter.
+"""
+
+from collections import Counter
 from datetime import datetime
-import json
+import itertools
 import re
-import urllib.parse
-from bs4 import BeautifulSoup
-from selenium.webdriver.common.by import By
-from selenium.common import exceptions as selenium_exceptions
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.expected_conditions import staleness_of
 
-from extensions.web_studies.selenium_scraper import SeleniumWrapper
+from extensions.web_studies.datasources.aws_store.aws_marketplace_api import (
+    AwsMarketplaceApi,
+    AwsMarketplaceApiError,
+    AwsMarketplaceContractError,
+)
+from backend.lib.search import Search
 from backend.lib.worker import BasicWorker
-from common.lib.exceptions import ProcessorInterruptedException, ProcessorException, QueryNeedsExplicitConfirmationException
-from common.lib.item_mapping import MappedItem
+from common.lib.exceptions import ProcessorInterruptedException, QueryNeedsExplicitConfirmationException
+from common.lib.helpers import add_notification
+from common.lib.item_mapping import MappedItem, MissingMappedField
 from common.lib.user_input import UserInput
-from extensions.web_studies.selenium_scraper import SeleniumSearch
 
 
-class SearchAwsStore(SeleniumSearch):
+class SearchAwsStore(Search):
     """
     Search Amazon Web Services Marketplace data source
     """
@@ -48,23 +80,35 @@ class SearchAwsStore(SeleniumSearch):
     }
 
     base_url = "https://aws.amazon.com/marketplace/"
-    search_url = base_url + "search/"
-    max_results = 1000
+    listing_url = base_url + "pp/"
+    vendor_url = base_url + "seller-profile?id="
+
+    # The API paginates without an upper bound we could find (13,000 results
+    # collected in one run during testing, still handing out page tokens)
+    max_results = 10000
+
+    # 4CAT filter name -> (Discovery API facet/filter type, label for "no filter")
+    # The facet type doubles as the Filters[].Type accepted by SearchListings.
+    filter_facets = {
+        "Categories": ("CATEGORY", "All categories"),
+        "Vendors": ("CREATOR", "All vendors"),
+        "Pricing Models": ("PRICING_MODEL", "All pricing models"),
+        "Delivery Methods": ("FULFILLMENT_OPTION_TYPE", "All delivery methods"),
+    }
+
+    # 4CAT filter name -> dataset parameter name
     query_param_map = {
         "Categories": "category",
         "Vendors": "creator",
         "Pricing Models": "pricing_model",
         "Delivery Methods": "fulfillment_option_type",
     }
-    query_param_ignore = ['All pricing models', 'All delivery methods', 'All vendors', 'All categories', 'Show all +1000 vendors']
 
+    # Sentinel option names that mean "do not filter on this"
+    query_param_ignore = [label for _, label in filter_facets.values()]
 
-    @classmethod
-    def is_compatible_with(cls, module=None, config=None):
-        """
-        Allow if Selenium is available
-        """
-        return SeleniumSearch.is_selenium_available(config=config)
+    # Warn in the interface when the cached filter vocabulary is older than this
+    stale_options_age = 7 * 86400
 
     @classmethod
     def get_options(cls, parent_dataset=None, config=None):
@@ -82,7 +126,7 @@ class SearchAwsStore(SeleniumSearch):
                 "default": 60 if max_results == 0 else min(max_results, 60),
                 "min": 0 if max_results == 0 else 1,
                 "max": max_results,
-                "tooltip": "The AWS Marketplace returns apps in batches of 20."
+                "tooltip": "The AWS Marketplace API returns apps in batches of 100."
             },
             "search_query": {
                 "type": UserInput.OPTION_TEXT_LARGE,
@@ -97,15 +141,15 @@ class SearchAwsStore(SeleniumSearch):
             }
         }
 
-        # Query Options collected every day by AwsStoreCategories worker below
-        filter_options = config.get("cache.aws.query_options", {})
-        for filter_name, filter_options in filter_options.items():
+        # Query options collected every day by the AwsStoreCategories worker below
+        cached_options = config.get("cache.aws.query_options", {})
+        for filter_name, filter_options in cached_options.items():
             if filter_name not in cls.query_param_map:
                 config.db.log.warning(f"AWS Unknown filter name: {filter_name}")
                 continue
 
             if not filter_options:
-                # Some filters are not currently being collected due to UI and API changes
+                # Some filters may not have been collected due to API changes
                 continue
 
             options[cls.query_param_map[filter_name]] = {
@@ -116,334 +160,301 @@ class SearchAwsStore(SeleniumSearch):
                 "requires": "advanced_filters==true",
             }
 
-        # TODO: add full details collection
-        # options["full_details"] = {
-        #         "type": UserInput.OPTION_TOGGLE,
-        #         "help": "Include full application details",
-        #         "default": False,
-        #         "tooltip": "If enabled, the full details of each application will be included in the output.",
-        #     }
+        # The filter list is refreshed daily; if that has not happened, say so
+        # rather than presenting a stale vocabulary as current.
+        updated_at = config.get("cache.aws.query_options_updated_at", 0)
+        if cached_options and updated_at:
+            age = datetime.now().timestamp() - updated_at
+            if age > cls.stale_options_age:
+                options["intro-1"]["help"] += (
+                    f"\n\n**Note:** the filter options below were last refreshed "
+                    f"{int(age // 86400)} days ago and may be out of date."
+                )
+
         return options
 
     def get_items(self, query):
         """
-        Fetch items from AWS Store
+        Fetch items from the AWS Marketplace Discovery API.
 
-        :param query:
-        :return:
+        Each combination of query and filter values is collected as its own
+        search, and every result records which combination produced it. That is
+        more requests than folding the filters into one call would be -- the API
+        accepts several values per filter -- but it keeps per-result provenance,
+        which is what makes a filtered dataset interpretable after the fact.
+
+        :param dict query:  Dataset parameters
+        :return generator:
         """
-        if not self.is_selenium_available(config=self.config):
-            self.dataset.update_status("Selenium not available; unable to collect from AWS Store.", is_final=True)
-            return
+        api = AwsMarketplaceApi(logger=self.log)
 
-        search_queries = query.get('search_query', [])
+        search_queries = query.get("search_query", [])
         if not search_queries:
-            # can search all
+            # an empty query collects everything
             search_queries = [""]
-        max_results = int(query.get('amount', 60))
-        full_details = query.get('full_details', False)
-        categories = query.get('category', ["all"])
-        creators = query.get('creator', ["all"])
-        pricing_models = query.get('pricing_model', ["all"])
-        fulfillment_option_types = query.get('fulfillment_option_type', ["all"])
+        max_results = int(query.get("amount", 60))
 
-        # Filter mappings
+        # Resolve the display names stored in the dataset parameters back to the
+        # codes the API expects, using the vocabulary the daily worker cached.
         filter_options = {}
         all_filters = self.config.get("cache.aws.query_options", {})
         for filter_name, filters in all_filters.items():
             if filter_name not in self.query_param_map:
                 self.log.warning(f"AWS Unknown filter name ({self.dataset.key}): {filter_name}")
                 continue
-            
-            filter_options[self.query_param_map[filter_name]] = {option["name"]: option["data-value"] for option in filters if option["name"] not in self.query_param_ignore}
+            filter_options[self.query_param_map[filter_name]] = {
+                option["name"]: option["data-value"]
+                for option in filters if option["name"] not in self.query_param_ignore
+            }
+
+        # Record which vocabulary this dataset was collected against; filter
+        # codes change over time and a dataset should say which set it used.
+        updated_at = self.config.get("cache.aws.query_options_updated_at", 0)
+        if updated_at:
+            self.dataset.log(f"Using AWS filter options last refreshed {datetime.fromtimestamp(updated_at).strftime('%Y-%m-%d %H:%M')}")
+        else:
+            self.dataset.log("AWS filter options have never been refreshed; only unfiltered queries will work")
+
+        # parameter name -> API filter type, in the order combinations are built
+        parameter_facets = {
+            self.query_param_map[filter_name]: facet_type
+            for filter_name, (facet_type, _) in self.filter_facets.items()
+        }
+        parameter_names = list(parameter_facets.keys())
+        parameter_values = [query.get(name, ["all"]) for name in parameter_names]
+
+        combinations = list(itertools.product(search_queries, *parameter_values))
+        total_queries = len(combinations)
+        self.dataset.update_status(f"Collecting {total_queries} queries (max {max_results} per query) from AWS Store")
 
         missing_filters = []
-        total_queries = len(search_queries) * len(categories) * len(creators) * len(pricing_models) * len(fulfillment_option_types)
-        self.dataset.update_status(f"Collecting {total_queries} queries (max {max_results} per query) from AWS Store")
+        contract_failure = None
         tried_queries = 0
-        for search_query in search_queries:
-            for category in categories:
-                if category == "all":
-                    category_code = None
-                else:
-                    category_code = filter_options.get("category", {}).get(category)
-                    if not category_code:
-                        self.dataset.update_status(f"Category code not found for {category}")
-                        missing_filters.append(category)
-                        continue
 
-                for creator in creators:
-                    if creator == "all":
-                        creator_code = None
-                    else:
-                        creator_code = filter_options.get("creator", {}).get(creator)
-                        if not creator_code:
-                            self.dataset.update_status(f"Creator code not found for {creator}")
-                            missing_filters.append(creator)
-                            continue
+        for combination in combinations:
+            if self.interrupted:
+                raise ProcessorInterruptedException("Interrupted while collecting AWS Store queries")
 
-                    for pricing_model in pricing_models:
-                        if pricing_model == "all":
-                            pricing_model_code = None
-                        else:
-                            pricing_model_code = filter_options.get("pricing_model", {}).get(pricing_model)
-                            if not pricing_model_code:
-                                self.dataset.update_status(f"Pricing model code not found for {pricing_model}")
-                                missing_filters.append(pricing_model)
-                                continue
+            tried_queries += 1
+            search_query = combination[0]
+            chosen = dict(zip(parameter_names, combination[1:]))
 
-                        for fulfillment_option_type in fulfillment_option_types:
-                            tried_queries += 1
-                            if fulfillment_option_type == "all":
-                                fulfillment_option_type_code = None
-                            else:
-                                fulfillment_option_type_code = filter_options.get("fulfillment_option_type", {}).get(fulfillment_option_type)
-                                if not fulfillment_option_type_code:
-                                    self.dataset.update_status(f"Fulfillment option type code not found for {fulfillment_option_type}")
-                                    missing_filters.append(fulfillment_option_type)
-                                    continue
+            filters, filter_codes, unresolved = self.build_filters(chosen, parameter_facets, filter_options)
+            if unresolved:
+                for name in unresolved:
+                    if name not in missing_filters:
+                        missing_filters.append(name)
+                    self.dataset.update_status(f"Filter code not found for {name}")
+                self.dataset.update_progress(tried_queries / total_queries)
+                continue
 
-                            if self.interrupted:
-                                raise ProcessorInterruptedException("Interrupted while collecting AWS Store queries")
-                            collected = 0
-                            page = 1
-                            result_number = 1
-                            query_url = self.get_query_url(self.search_url,
-                                                        query=search_query if search_query else None,
-                                                        category=category_code,
-                                                        creator=creator_code,
-                                                        pricing_model=pricing_model_code,
-                                                        fulfillment_option_type=fulfillment_option_type_code)
-                            success, errors = self.get_with_error_handling(query_url)
-                            if not success:
-                                self.dataset.log(f"Unable to collect AWS page {query_url}: {errors}")
-                                continue
-                            else:
-                                self.dataset.log(f"Successfully retrieved AWS page {query_url}")
-
-                            try:
-                                text_results = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, '//span[@data-test-selector="availableProductsCountMessage"]')))
-                                text_results = text_results.text.lstrip('(').rstrip(" results)")
-                                try:
-                                    num_results = int(text_results.replace("Over ", "").replace(",", ""))
-                                except ValueError:
-                                    num_results = None
-                                    self.log.warning(f"{self.type} ({self.dataset.key}) could not parse number of results: {text_results}")
-                                if num_results == 0:
-                                    self.dataset.log(f"No results found{', continuing...' if tried_queries < (total_queries - 1) else ''}")
-                                    continue
-                                else:
-                                    self.dataset.log(f"Found total of {num_results if (num_results and 'over' not in text_results.lower()) else text_results.lower()} results")
-                            except selenium_exceptions.NoSuchElementException:
-                                num_results = None
-                                self.log.warning(f"{self.type} number of results element not found; unknown number of results")
-                                self.dataset.log("Unknown number of results found")
-                            total_results = min(num_results if num_results else max_results, max_results)
-                            self.dataset.log(f"Starting AWS pagination at page {page}; target {total_results} results")
-
-                            while collected < total_results:
-                                try:
-                                    results_table = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'tbody')))
-                                    WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, '//h2[@data-semantic="title"]')))
-                                except selenium_exceptions.TimeoutException:
-                                    self.dataset.log(f"AWS page {page}: timeout waiting for results to render; stopping pagination for this query")
-                                    break
-
-                                # Check if there are results
-                                result_rows = results_table.find_elements(By.TAG_NAME, "tr")
-                                self.dataset.log(f"AWS page {page}: found {len(result_rows)} rows")
-                                if not result_rows:
-                                    self.dataset.log(f"No result rows found on AWS page {page}; stopping pagination for this query")
-                                    break
-                                else:
-                                    self.dataset.log(f"AWS page {page}: collecting results table w/ {len(result_rows)} rows ({collected}/{total_results} collected previously)")
-
-                                default_implicit_wait = self.config.get('selenium.implicit_wait', 10)
-                                # Set implicit wait to 0 to speed up collection since we are already checking for element presence with WebDriverWait; will reset to default at end of page collection
-                                self.driver.implicitly_wait(0)
-                                try:
-                                    for row_index, result_block in enumerate(result_rows, start=1):
-                                        if self.interrupted:
-                                            raise ProcessorInterruptedException("Interrupted while collecting AWS Store results")
-
-                                        if collected >= total_results:
-                                            break
-
-                                        # TODO: check full details
-                                        try:
-                                            result = self.parse_search_result(result_block)
-                                        except Exception as e:
-                                            self.dataset.log(f"AWS page {page}: failed parsing row {row_index}; skipping ({type(e).__name__}: {e})")
-                                            continue
-
-                                        result["id"] = result["app_id"]
-                                        result["4CAT_metadata"] = {"query": search_query,
-                                                                "category": category,
-                                                                "creator": creator,
-                                                                "pricing_model": pricing_model,
-                                                                "fulfillment_option_type": fulfillment_option_type,
-                                                                # These codes are used to filter the results in the AWS Store
-                                                                "filter_codes": {"category": category_code,
-                                                                                "creator": creator_code,
-                                                                                "pricing_model": pricing_model_code,
-                                                                                "fulfillment_option_type": fulfillment_option_type_code},
-                                                                "page": page,
-                                                                "rank": result_number,
-                                                                "collected_at_timestamp": datetime.now().timestamp()}
-                                        result_number += 1
-                                        collected += 1
-                                        yield result
-                                finally:
-                                    self.driver.implicitly_wait(default_implicit_wait)
-
-                                self.dataset.log(f"Collected {collected} results so far for query: {search_query if search_query else 'no query provided'}")
-                                first_row_before = result_rows[0]
-                                if not self.click_next_page(self.driver):
-                                    # No next page
-                                    break
-                                else:
-                                    try:
-                                        WebDriverWait(self.driver, 5).until(staleness_of(first_row_before))
-                                    except selenium_exceptions.TimeoutException:
-                                        self.dataset.log(f"AWS page did not change after clicking next on page {page}; stopping pagination for this query")
-                                        break
-                                    page += 1
-
-                            if not collected:
-                                self.dataset.log(f"AWS no-rows debug URL: {self.driver.current_url}")
-                                try:
-                                    body_text = self.driver.find_element(By.TAG_NAME, "body").text.strip()
-                                except selenium_exceptions.NoSuchElementException:
-                                    body_text = ""
-                                if body_text:
-                                    self.dataset.log(f"AWS no-rows debug text: {body_text[:1000].replace(chr(10), ' ')}")
-                                else:
-                                    self.dataset.log(f"AWS no-rows debug source: {self.driver.page_source[:1500].replace(chr(10), ' ')}")
-                            
-                            self.dataset.update_progress(tried_queries / total_queries)
-                            self.dataset.update_status(f"Collected {collected} of {total_results} results for query: {search_query if search_query else 'no query provided'}, category: {category if category else 'all'}, creator: {creator if creator else 'all'}, pricing model: {pricing_model_code if pricing_model_code else 'all'}, fulfillment type: {fulfillment_option_type_code if fulfillment_option_type_code else 'all'} ({tried_queries} of {total_queries})")
-
-        if missing_filters:
-            self.dataset.log(f"Missing filter codes needed to search for: {', '.join(missing_filters)}")
-            self.dataset.update_status(f"Not all filters could be found; see log for details", is_final=True)
-
-    @staticmethod
-    def parse_search_result(result_element):
-        """
-        Parse search result Selenium element for useful data
-
-        TODO: could be moved to map item, but would need to parse without Selenium (e.g., BeautifulSoup); would still
-        need link for full details regardless
-
-        :param result_element:  Selenium element
-        :return:  dict
-        """
-        # icon
-        try:
-            thumbnail = result_element.find_element(By.XPATH, './/div[@data-semantic="logo"]').find_element(By.TAG_NAME,"img").get_attribute("src")
-        except selenium_exceptions.NoSuchElementException:
-            thumbnail = None
-        # app title
-        title_block = result_element.find_element(By.XPATH, './/h2[@data-semantic="title"]')
-        title = title_block.text
-        app_url = title_block.find_element(By.TAG_NAME, "a").get_attribute("href")
-        app_id = app_url.split("prodview-")[1].split("?")[0]
-        # vendor
-        try:
-            vendor_block = result_element.find_element(By.XPATH, './/a[@data-semantic="vendorNameLink"]')
-            vendor_name = vendor_block.text
-            vendor_url = vendor_block.get_attribute("href")
-        except selenium_exceptions.NoSuchElementException:
-            # vendor not linked
+            collected = 0
+            total_available = None
             try:
-                vendor_block = result_element.find_element(By.XPATH, './/span[@data-semantic="vendorNameLink"]')
-                vendor_name = vendor_block.text
-                vendor_url = None
-            except selenium_exceptions.NoSuchElementException:
-                vendor_name = None
-                vendor_url = None
-        # pricing
-        try:
-            badge = result_element.find_element(By.XPATH, './/span[@data-semantic="badge-text"]').text
-        except selenium_exceptions.NoSuchElementException:
-            badge = None
-        try:
-            pricing = result_element.find_element(By.XPATH, './/div[@data-semantic="pricing"]').text
-        except selenium_exceptions.NoSuchElementException:
-            pricing = None
+                for listing, total_available, page in api.search_listings(
+                        search_text=search_query if search_query else None,
+                        filters=filters if filters else None,
+                        max_results=max_results,
+                        interrupt_check=self.raise_if_interrupted):
+                    collected += 1
+                    yield {
+                        "id": listing.get("Id"),
+                        "listing": listing,
+                        "4CAT_metadata": {
+                            "collection_method": "discovery-api",
+                            "api_version": api.api_version,
+                            "query": search_query,
+                            **chosen,
+                            # The codes used to filter results in the AWS Store
+                            "filter_codes": filter_codes,
+                            "page": page,
+                            "rank": collected,
+                            "collected_at_timestamp": datetime.now().timestamp(),
+                        },
+                    }
+            except AwsMarketplaceContractError as e:
+                # The API no longer looks the way this data source expects. That
+                # affects every remaining query equally, so stop rather than
+                # grind through them; what has been collected is still written.
+                contract_failure = str(e)
+                self.log.error(f"AWS Marketplace API contract failure ({self.dataset.key}): {e}")
+                self.dataset.log(f"AWS Marketplace API returned an unexpected response: {e}")
+                break
+            except AwsMarketplaceApiError as e:
+                self.dataset.log(f"Unable to collect AWS results for query {search_query!r}: {e}")
+                self.dataset.update_progress(tried_queries / total_queries)
+                continue
 
-        # 2026-2-25 AWS updated their UI and added a new "AI listing highlights" section which often in place of the description itself
-        # description
-        try:
-            search_description = result_element.find_element(By.XPATH, './/p[@data-semantic="desc"]').text
-        except selenium_exceptions.NoSuchElementException:
-            search_description = None
+            if collected == 0:
+                self.dataset.log(f"No results for query {search_query!r} with filters {filter_codes}")
 
-        # ai highlights
-        try:
-            ai_listing_highlights = result_element.find_element(By.XPATH, './/div[@data-semantic="ai-listing-highlights"]').text
-        except selenium_exceptions.NoSuchElementException:
-            ai_listing_highlights = None
+            self.dataset.update_progress(tried_queries / total_queries)
+            self.dataset.update_status(
+                f"Collected {collected}{f' of {total_available}' if total_available is not None else ''} results for "
+                f"query: {search_query if search_query else 'no query provided'}, "
+                + ", ".join(f"{name}: {value}" for name, value in chosen.items())
+                + f" ({tried_queries} of {total_queries})"
+            )
 
-        return {
-            "app_id": app_id,
-            "title": title,
-            "app_url": app_url,
-            "vendor_name": vendor_name,
-            "vendor_url": vendor_url,
-            "badge": badge,
-            "pricing": pricing,
-            "search_description": search_description,
-            "thumbnail": thumbnail,
-            "ai_listing_highlights": ai_listing_highlights,
-            "html_source": result_element.get_attribute("outerHTML"),
-        }
+        if contract_failure:
+            add_notification(
+                self.db, "!admin",
+                f"The AWS Marketplace API returned an unexpected response and collection was stopped early "
+                f"(dataset `{self.dataset.key}`). This usually means AWS changed the API. Details: {contract_failure}"
+            )
+            self.dataset.update_status(
+                "AWS Marketplace returned an unexpected response; collection stopped early and this dataset is "
+                "incomplete. See the dataset log for details.", is_final=True)
+        elif missing_filters:
+            self.dataset.log(f"Missing filter codes needed to search for: {', '.join(missing_filters)}")
+            self.dataset.update_status("Not all filters could be found; see log for details", is_final=True)
+
+    def raise_if_interrupted(self):
+        """
+        Abort a long crawl promptly when 4CAT asks the worker to stop.
+
+        Passed to the API client so pagination can be broken between pages
+        rather than only between queries.
+        """
+        if self.interrupted:
+            raise ProcessorInterruptedException("Interrupted while collecting AWS Store results")
 
     @staticmethod
-    def get_query_url(url, query=None, category=None, creator=None, pricing_model=None, fulfillment_option_type=None):
-        filters = []
-        params = {}
-        if query:
-            params["searchTerms"] = query
-        if category:
-            params["category"] = category
-        if creator:
-            params["CREATOR"] = creator
-            filters.append("CREATOR")
-        if pricing_model:
-            params["PRICING_MODEL"] = pricing_model
-            filters.append("PRICING_MODEL")
-        if fulfillment_option_type:
-            params["FULFILLMENT_OPTION_TYPE"] = fulfillment_option_type
-            filters.append("FULFILLMENT_OPTION_TYPE")
-        if filters:
-            params["filters"] = ",".join(filters)
-        url += "?" + urllib.parse.urlencode(params) if params else ""
-        return url
-
-    def click_next_page(self, driver):
-        """"
-        Click next page button
+    def build_filters(chosen, parameter_facets, filter_options):
         """
-        next_page = driver.find_elements(By.XPATH, '//button[@aria-label="Next page"]')
-        if not next_page:
-            return False
+        Translate chosen filter display names into API filter clauses.
 
-        next_button = next_page[0]
-        if next_button.get_attribute("aria-disabled") == "true" or not next_button.is_enabled():
-            return False
+        :param dict chosen:  Parameter name -> chosen display name (or "all")
+        :param dict parameter_facets:  Parameter name -> API filter type
+        :param dict filter_options:  Parameter name -> {display name: code}
+        :return tuple:  (filters, filter_codes, unresolved names)
+        """
+        filters = []
+        filter_codes = {}
+        unresolved = []
 
-        driver.execute_script("arguments[0].scrollIntoView(true);", next_button)
-        return self.smart_click(next_button)
+        for parameter, value in chosen.items():
+            if value == "all":
+                filter_codes[parameter] = None
+                continue
+
+            code = filter_options.get(parameter, {}).get(value)
+            if not code:
+                unresolved.append(value)
+                continue
+
+            filter_codes[parameter] = code
+            filters.append({"Type": parameter_facets[parameter], "Values": [code]})
+
+        return filters, filter_codes, unresolved
 
     @staticmethod
     def map_item(item):
         """
-        Map item to a standard format
+        Map a collected item to a flat row.
+
+        Handles both the Discovery API items collected since 2026-09 and the
+        Selenium-scraped items in datasets collected before that, so older
+        datasets keep opening and exporting exactly as they did.
         """
+        if "listing" in item:
+            try:
+                return SearchAwsStore.map_api_item(item)
+            except (TypeError, AttributeError) as e:
+                # 4CAT turns KeyError and IndexError into a MapItemException and
+                # alerts an operator; a field that changed type rather than name
+                # deserves the same treatment instead of breaking iteration.
+                raise KeyError(f"AWS listing has an unexpected structure ({type(e).__name__}: {e})") from e
+        return SearchAwsStore.map_scraped_item(item)
+
+    @staticmethod
+    def map_api_item(item):
+        """
+        Map an item collected from the Discovery API.
+
+        Every optional field is read through a helper that tests whether AWS
+        *sent the key*, not whether the value is truthy. The three states are
+        distinct and are kept distinct:
+
+        - key absent    -> MissingMappedField; AWS told us nothing, so neither
+                           can we
+        - key present, null or empty -> the default; AWS told us there is no
+                           value, which is something we know
+        - key present with a value -> the value
+
+        Fields no listing can be useful without go through `required` instead,
+        which raises when they are absent or null. That is not a per-listing
+        quirk but a sign the response format changed, and raising routes it into
+        4CAT's unmappable-item alerting so an operator hears about it.
+        """
+        listing = item["listing"]
+        metadata = item.get("4CAT_metadata", {})
+
+        app_id = SearchAwsStore.required(listing, "Id")
+        display = SearchAwsStore.required(listing, "DisplayAttributes")
+        title = SearchAwsStore.required(display, "Title", "DisplayAttributes.Title")
+
+        # A container AWS nulled or omitted tells us nothing about its members,
+        # so an empty stand-in makes every field inside it read as absent.
+        creator = listing.get("ListingCreator") or {}
+        offer = listing.get("OfferSummary") or {}
+        product = listing.get("ProductAttributes") or {}
+        version = display.get("VersionInformation") or {}
+        raw_vendor_id = creator.get("ProfileId")
+
+        return MappedItem({
+            "id": app_id,
+            "query": metadata.get("query", ""),
+            "category": metadata.get("category") or "all",
+            "creator": metadata.get("creator") or "all",
+            "pricing_model": metadata.get("pricing_model") or "all",
+            "fulfillment_option_type": metadata.get("fulfillment_option_type") or "all",
+            "page": metadata.get("page", ""),
+            "rank": metadata.get("rank", ""),
+            "timestamp": SearchAwsStore.safe_timestamp(metadata.get("collected_at_timestamp")),
+            "body": SearchAwsStore.best_text(display),
+
+            "app_id": app_id,
+            "title": title,
+            "app_url": SearchAwsStore.listing_url + app_id,
+            "vendor_name": SearchAwsStore.optional(creator, "DisplayName"),
+            # Derived rather than reported: a profile URL built from an empty id
+            # would be wrong, not empty, so there is nothing to report here.
+            "vendor_url": (SearchAwsStore.vendor_url + raw_vendor_id) if raw_vendor_id else MissingMappedField(""),
+            "badge": SearchAwsStore.first_display_name(listing, "Badges"),
+            "pricing": SearchAwsStore.optional(offer, "PricingSummary"),
+            "search_description": SearchAwsStore.optional(display, "ShortDescription"),
+            "thumbnail": SearchAwsStore.thumbnail_url(listing, "Media"),
+            # Generated in the web interface AWS no longer exposes to us; kept as
+            # a column so datasets collected before the API switch line up.
+            "ai_listing_highlights": MissingMappedField(""),
+
+            "long_description": SearchAwsStore.optional(display, "LongDescription"),
+            "categories": SearchAwsStore.display_names(listing, "Categories"),
+            "badges": SearchAwsStore.display_names(listing, "Badges"),
+            "fulfillment_options": SearchAwsStore.display_names(listing, "FulfillmentOptionTypes"),
+            "pricing_models": SearchAwsStore.display_names(offer, "PricingModels"),
+            "pricing_units": SearchAwsStore.display_names(offer, "PricingUnits"),
+            "purchase_paths": SearchAwsStore.joined_strings(listing, "PurchasePaths"),
+            "vendor_id": SearchAwsStore.optional(creator, "ProfileId"),
+            "product_id": SearchAwsStore.optional(product, "BaseProductId"),
+            "recommended_version": SearchAwsStore.optional(version, "RecommendedVersion"),
+
+            **SearchAwsStore.review_columns(listing, "Reviews"),
+        })
+
+    @staticmethod
+    def map_scraped_item(item):
+        """
+        Map an item collected by the pre-2026-09 Selenium scraper.
+
+        Reproduces the original mapping exactly; existing datasets should not
+        change shape because the collection method did.
+        """
+        item = item.copy()
         fourcat_metadata = item.pop("4CAT_metadata", {})
         # Remove HTML source
-        item.pop("html_source")
+        item.pop("html_source", None)
         best_text = item.get("search_description") or item.get("ai_listing_highlights") or ""
         return MappedItem({
             "query": fourcat_metadata.get("query", ""),
@@ -453,10 +464,165 @@ class SearchAwsStore(SeleniumSearch):
             "fulfillment_option_type": fourcat_metadata.get("fulfillment_option_type") if fourcat_metadata.get("fulfillment_option_type") else "all",
             "page": fourcat_metadata.get("page", ""),
             "rank": fourcat_metadata.get("rank", ""),
-            "timestamp": int(fourcat_metadata.get("collected_at_timestamp")),
+            "timestamp": SearchAwsStore.safe_timestamp(fourcat_metadata.get("collected_at_timestamp")),
             "body": best_text,
             **item
         })
+
+    @staticmethod
+    def safe_timestamp(value):
+        """
+        Coerce a stored collection timestamp to an integer.
+
+        Returns 0 rather than raising: a missing timestamp is a flaw in the
+        stored row, not a reason to make the whole item unreadable.
+        """
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return MissingMappedField(0)
+
+    @staticmethod
+    def required(container, key, path=None):
+        """
+        Read a field the data source cannot do without.
+
+        Absent or null here is not a quirk of one listing: `Id` and a title are
+        what make a row a row, and AWS has always sent them. Their disappearance
+        means the response format changed. Raising KeyError puts that in front of
+        an operator through 4CAT's unmappable-item alerting, instead of writing
+        thousands of rows with an empty identifier.
+
+        :param dict container:  Object to read from
+        :param str key:  Key that must be present and non-null
+        :param str path:  Dotted path for the error message, if not just `key`
+        :return:  The value
+        """
+        value = container.get(key) if isinstance(container, dict) else None
+        if value is None:
+            raise KeyError(
+                f"AWS listing has no {path or key}; the API response format has likely changed"
+            )
+        return value
+
+    @staticmethod
+    def optional(container, key, default=""):
+        """
+        Read a field AWS may not send, keeping absent apart from empty.
+
+        Presence of the key is what is tested, never the truthiness of the
+        value, because those answer different questions:
+
+        - the key is absent, so AWS said nothing about this field and neither
+          can we -> MissingMappedField, recorded in the `missing_fields` column
+        - the key is there and null or empty, so AWS said there is no value
+          here, which is knowledge -> the default
+        - the key is there with a value -> that value, even when it is falsy
+
+        :param dict container:  Object to read from
+        :param str key:  Key to read
+        :param default:  Value standing in for an explicit null
+        :return:  The value, the default, or MissingMappedField
+        """
+        if key not in container:
+            return MissingMappedField(default)
+        value = container[key]
+        return default if value is None else value
+
+    @staticmethod
+    def display_names(container, key):
+        """
+        Flatten a list of {"DisplayName": ...} objects to a comma-separated string.
+
+        An empty or null list is AWS saying there are none, which maps to "";
+        only an absent key is unknown. A member without a `DisplayName` raises,
+        since that is the API changing rather than a listing without categories.
+        """
+        if key not in container:
+            return MissingMappedField("")
+        values = container[key]
+        return ",".join(value["DisplayName"] for value in values) if values else ""
+
+    @staticmethod
+    def first_display_name(container, key):
+        """
+        The first display name in a list, for the single-valued legacy `badge`
+        column. The full list is available in `badges`.
+        """
+        if key not in container:
+            return MissingMappedField("")
+        values = container[key]
+        return values[0]["DisplayName"] if values else ""
+
+    @staticmethod
+    def joined_strings(container, key):
+        """
+        Flatten a list of plain strings to a comma-separated string.
+        """
+        if key not in container:
+            return MissingMappedField("")
+        values = container[key]
+        return ",".join(values) if values else ""
+
+    @staticmethod
+    def best_text(display):
+        """
+        The fullest description AWS supplied, for 4CAT's `body` column.
+
+        Unknown only when AWS sent neither description field. A listing that
+        carries both keys with nothing in them has an empty body, which is a
+        fact about the listing rather than a gap in what we collected.
+        """
+        if "ShortDescription" not in display and "LongDescription" not in display:
+            return MissingMappedField("")
+        return display.get("ShortDescription") or display.get("LongDescription") or ""
+
+    @staticmethod
+    def thumbnail_url(container, key):
+        """
+        Build a thumbnail URL from AWS's split domain/path media object.
+
+        A media object carrying no usable thumbnail is a known answer -- this
+        listing has no logo -- so it maps to "" rather than being marked unknown.
+        """
+        if key not in container:
+            return MissingMappedField("")
+        media = container[key] or {}
+        for media_key in ("LOGO_THUMBNAIL", "LISTING_LOGO_THUMBNAIL"):
+            image = media.get(media_key)
+            if image and image.get("Path"):
+                return image.get("DefaultDomain", "") + image["Path"]
+        return ""
+
+    # Review sources AWS aggregates, and the column prefix each gets
+    review_sources = {"AWS_MARKETPLACE": "aws", "G2": "g2", "PEERSPOT": "peerspot"}
+
+    @staticmethod
+    def review_columns(container, key):
+        """
+        Flatten the per-source review aggregates.
+
+        AWS sends `Reviews: {}` for a listing nobody has reviewed, so a source
+        absent from a present `Reviews` object means no reviews there -- a count
+        of zero, which we know.
+
+        A null `Reviews` is treated like an absent one, consistent with the other
+        nested objects: it means the per-source keys never arrived, so we cannot
+        say whether a listing has G2 reviews or simply was not checked.
+        """
+        columns = {}
+        known = container.get(key) is not None
+        reviews = container.get(key) or {}
+
+        for source, prefix in SearchAwsStore.review_sources.items():
+            if not known:
+                columns[f"review_rating_{prefix}"] = MissingMappedField("")
+                columns[f"review_count_{prefix}"] = MissingMappedField(0)
+                continue
+            aggregate = reviews.get(source) or {}
+            columns[f"review_rating_{prefix}"] = aggregate.get("AverageCustomerRating", "")
+            columns[f"review_count_{prefix}"] = aggregate.get("Count", 0)
+        return columns
 
     @staticmethod
     def validate_query(query, request, config):
@@ -471,54 +637,48 @@ class SearchAwsStore(SeleniumSearch):
         :param User user:  User object of user who has submitted the query
         :return dict:  Safe query parameters
         """
-        queries = [q.strip() for q in re.split(',|\n', query.get('search_query', "")) if q.strip()]
+        queries = [q.strip() for q in re.split(r',|\n', query.get('search_query', "")) if q.strip()]
         if not queries:
             # always at least one "query"
             queries = [""]
-        category = query.get('category', ["all"])
-        if type(category) == str:
-            category = [category]
-        creator =query.get('creator', ["all"])
-        if type(creator) == str:
-            creator = [creator]
-        pricing_model = query.get('pricing_model', ["all"])
-        if type(pricing_model) == str:
-            pricing_model = [pricing_model]
-        fulfillment_option_type = query.get('fulfillment_option_type', ["all"])
-        if type(fulfillment_option_type) == str:
-            fulfillment_option_type = [fulfillment_option_type]
-        
-        total_queries = len(queries) * len(category) * len(creator) * len(pricing_model) * len(fulfillment_option_type)
+
+        chosen = {}
+        for parameter in SearchAwsStore.query_param_map.values():
+            value = query.get(parameter, ["all"])
+            if type(value) is str:
+                value = [value]
+            chosen[parameter] = value
+
+        total_queries = len(queries)
+        for values in chosen.values():
+            total_queries *= len(values)
         num_results = int(query.get('amount', 60)) * total_queries
 
         if not query.get("frontend-confirm") and (total_queries > 50 or num_results > 10000):
             raise QueryNeedsExplicitConfirmationException(f"This combination of filters and queries will result in {total_queries} queries w/ up to {num_results} results. Please confirm you want to proceed.")
+
         return {
             "search_query": queries,
-            "category": category,
-            "creator": creator,
-            "pricing_model": pricing_model,
-            "fulfillment_option_type": fulfillment_option_type,
+            **chosen,
             "amount": query.get('amount', 60),
         }
 
 
 class AwsStoreCategories(BasicWorker):
     """
-    Collect AWS Store categories and store them in database
+    Collect AWS Store filter options and store them in the database.
+
+    Previously scraped the search page's left sidebar, which only ever rendered
+    the first handful of options per filter and required a browser to see any of
+    them. One GetSearchFacets call now returns the whole vocabulary, with a
+    listing count per option and the parent/child relation between categories.
     """
     type = "aws-store-category-collector"  # job ID
 
-    # /marketplace/b/<uuid> — category browse pages. The UUID also doubles as
-    # the value of the `?category=` filter on /marketplace/search/. 
-    category_link_re = re.compile(r"^/marketplace/b/([0-9a-fA-F-]{30,})")
-   
-    # Search-page sidebar filters we surface as datasource options.
-    sidebar_filter_map = {
-        "CREATOR-filter": ("Vendors", "All vendors"),
-        "PRICING_MODEL-filter": ("Pricing Models", "All pricing models"),
-        "FULFILLMENT_OPTION_TYPE-filter": ("Delivery Methods", "All delivery methods"),
-    }
+    # The API will return more (there are thousands of vendors), but these have
+    # to fit in a usable dropdown. Options come back ordered by listing count,
+    # so this keeps the ones researchers are most likely to want.
+    max_options_per_filter = 500
 
     @classmethod
     def ensure_job(cls, config=None):
@@ -532,185 +692,116 @@ class AwsStoreCategories(BasicWorker):
 
     def work(self):
         """
-        Collect AWS Store query options and store them in database via Selenium
-
-        Two pages are needed: the homepage (for the full category list) and 
-        /marketplace/search/ (for the vendor, pricing-model, and delivery-method 
-        filters in the left sidebar). Each extraction is wrapped so one page's 
-        failure does not lose the other's results.
+        Refresh the filter vocabulary offered by the AWS Marketplace data source.
         """
         if "aws-store" not in self.config.get("datasources.enabled"):
             # Datasource no longer enabled; delete job if it exists and skip
             self.job.finish(delete=True)
             return
-        selenium_wrapper = SeleniumWrapper()
-        if not selenium_wrapper.is_selenium_available(config=self.config):
-            raise ProcessorException("Selenium is not available; cannot collect categories from AWS Store")
 
-        selenium_wrapper.start_selenium(config=self.config)
-        collected = {}
+        api = AwsMarketplaceApi(logger=self.log)
+        facet_types = [facet_type for facet_type, _ in SearchAwsStore.filter_facets.values()]
+
         try:
-            # Backend runs get_options for each processor on init; but does not seem to have logging
-            selenium_wrapper.selenium_log.info(f"Fetching category options from AWS Store {SearchAwsStore.base_url}")
-            selenium_wrapper.driver.get(SearchAwsStore.base_url)
-            if not selenium_wrapper.check_for_movement():
-                raise ProcessorException("Failed to load AWS Store")
-            if not selenium_wrapper.check_page_is_loaded():
-                raise ProcessorException("AWS Store did not load and timed out")
-            selenium_wrapper.scroll_down_page_to_load(60)
+            facets = api.get_search_facets(
+                facet_types=facet_types,
+                max_results_per_facet=self.max_options_per_filter,
+            )
+        except AwsMarketplaceContractError as e:
+            # Keep whatever vocabulary is already cached: a stale filter list is
+            # more useful than none, and the interface says how old it is.
+            self.log.error(f"AWS Marketplace filter collection failed -- API changed: {e}")
+            add_notification(
+                self.db, "!admin",
+                f"The AWS Marketplace API returned an unexpected response while refreshing filter options, so they "
+                f"could not be updated. This usually means AWS changed the API. Details: {e}"
+            )
+            return
+        except AwsMarketplaceApiError as e:
+            # Transient; the job runs again tomorrow
+            self.log.warning(f"AWS Marketplace filter collection failed: {e}")
+            return
 
-            try:
-                category_filters = self.get_category_filters(page_source=selenium_wrapper.driver.page_source, logger=self.log)
-                if category_filters:
-                    collected.update(category_filters)
-            except Exception as e:
-                # falls back to a free-text "all categories"
-                # query when no cached filters are available.
-                self.log.error(f"Unexpected error collecting AWS Store categories ({type(e).__name__}: {e})")
+        collected = self.facets_to_query_options(facets, logger=self.log)
 
-            # Sidebar filters live on the search page rather than the homepage.
-            selenium_wrapper.selenium_log.info(f"Fetching sidebar filters from {SearchAwsStore.search_url}")
-            selenium_wrapper.driver.get(SearchAwsStore.search_url)
-            if selenium_wrapper.check_for_movement() and selenium_wrapper.check_page_is_loaded():
-                try:
-                    WebDriverWait(selenium_wrapper.driver, 20).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="CREATOR-filter"]'))
-                    )
+        if not collected:
+            self.log.warning("Failed to collect any filter options from AWS Store")
+            return
 
-                    sidebar_filters = self.get_sidebar_filters(page_source=selenium_wrapper.driver.page_source, logger=self.log)
-                    if sidebar_filters:
-                        collected.update(sidebar_filters)
-                except Exception as e:
-                    self.log.error(f"Unexpected error collecting AWS Store sidebar filters ({type(e).__name__}: {e})")
-            else:
-                self.log.warning("AWS Marketplace search page did not load; skipping sidebar filter collection")
+        self.log.info(
+            f"Collected {len(collected)} query types with a total of "
+            f"{sum(len(options) for options in collected.values())} options for the AWS Store"
+        )
 
-            if collected and any(collected.values()):
-                self.log.info(f"Collected {len(collected)} query types with a total of {len(sum(collected.values(), []))} options for the AWS Store")
-                # Update existing options with new data (replace whole sections to remove old options, but do not remove sections that are no longer collected at all due to UI/API changes)
-                old_options = self.config.get("cache.aws.query_options", {})
-                for filter_name, options in collected.items():
-                    old_options[filter_name] = options
+        # Replace whole sections to remove old options, but do not remove
+        # sections that were not collected at all, so a partial failure does not
+        # silently drop a filter from the interface.
+        old_options = self.config.get("cache.aws.query_options", {})
+        for filter_name, options in collected.items():
+            old_options[filter_name] = options
 
-                self.config.set("cache.aws.query_options", old_options)
-                self.config.set("cache.aws.query_options_updated_at", datetime.now().timestamp())
-            else:
-                self.log.warning("Failed to collect any filter options from AWS Store")
-
-        except ProcessorException as e:
-            self.log.error(f"Error collecting AWS Store categories: {e}")
-        finally:
-            # Always quit selenium
-            selenium_wrapper.quit_selenium()
-
-        return
+        self.config.set("cache.aws.query_options", old_options)
+        self.config.set("cache.aws.query_options_updated_at", datetime.now().timestamp())
 
     @staticmethod
-    def get_category_filters(page_source, logger):
+    def facets_to_query_options(facets, logger=None):
         """
-        Get category filters from the AWS Marketplace homepage.
+        Convert an API facet map into the cached query-option format.
 
-        AWS lists the full canonical set of categories in the homepage footer,
-        each as an anchor pointing at `/marketplace/b/<uuid>`. The UUID is also
-        accepted as `?category=<uuid>` on the search page, so we can use it
-        directly as the filter value. The same UUIDs reappear in the
-        "Popular Categories" grid above the footer, sometimes with a shorter
-        label; we let later occurrences win so the footer's canonical name is
-        what surfaces in the UI.
+        The stored format is unchanged from when these were scraped, so saved
+        queries and the option-rendering code keep working:
 
-        :param page_source:  The HTML source of the homepage
-        :param logger:  Logger
-        :return:  dict on success, None if no categories could be found
+            {"Categories": [{"name": ..., "data-value": ...}, ...], ...}
+
+        Display names are made unique within each filter. Both the interface and
+        the query resolver key options by name, so two options sharing one -- as
+        several AWS vendors do, "Amazon Web Services" among them -- would
+        otherwise collapse into one and make the rest unreachable.
+
+        :param dict facets:  ListingFacets from GetSearchFacets
+        :param logger:  Optional logger
+        :return dict:  Filter name -> list of options
         """
-        soup = BeautifulSoup(page_source, "html.parser")
+        collected = {}
 
-        seen = {}
-        for anchor in soup.find_all("a", href=True):
-            try:
-                path = urllib.parse.urlparse(anchor["href"]).path
-            except ValueError:
-                continue
-            match = AwsStoreCategories.category_link_re.match(path)
-            if not match:
-                continue
-            name = anchor.get_text(strip=True)
-            if not name:
-                continue
-            seen[match.group(1)] = name
-
-        if not seen:
-            if logger:
-                logger.warning("AWS Marketplace: no /marketplace/b/<uuid> category links found on homepage")
-            return None
-
-        categories = [{"name": "All categories", "data-value": "All categories"}]
-        for uuid, name in sorted(seen.items(), key=lambda kv: kv[1].lower()):
-            categories.append({"name": name, "data-value": uuid})
-
-        if logger:
-            logger.info(f"AWS Marketplace: extracted {len(categories) - 1} categories from homepage links")
-
-        return {"Categories": categories}
-
-    @staticmethod
-    def get_sidebar_filters(page_source, logger):
-        """
-        Get Vendor, Pricing Model, and Delivery Method filters from the
-        /marketplace/search/ sidebar.
-
-        Each sidebar filter renders its top ~10 options inline (the "Show all"
-        link behind the rest requires interaction we deliberately avoid).
-        Every visible option carries a `data-metric-meta-data` JSON attribute
-        AWS uses for click telemetry, of the form
-        `{"componentType": "...", "subComponent": "<display name>",
-        "componentId": "<filter value>"}`. componentId is the exact value
-        AWS accepts for `?CREATOR=`, `?PRICING_MODEL=`, and
-        `?FULFILLMENT_OPTION_TYPE=`, so it doubles as our data-value.
-
-        The sidebar is hydrated client-side by AWS's React app — `page_source`
-        sampled too early returns the pre-hydration HTML where the filter
-        blocks do not yet exist (especially under headless Firefox). We wait
-        explicitly for the largest of the three blocks (CREATOR) to appear
-        before snapshotting; the others ship at the same time.
-
-        Returns the top-N visible options per filter only. Sufficient for the
-        common filters (PRICING_MODEL has ~5 values total, FULFILLMENT_OPTION_TYPE
-        a handful) and a useful subset for vendors, without the fragility of
-        clicking through the "Show all" popup.
-
-        :param page_source:  The HTML source of the search page 
-        :param logger:  Logger
-        :return:  dict mapping filter name -> list of {"name", "data-value"}
-        """
-        soup = BeautifulSoup(page_source, "html.parser")
-        result = {}
-
-        for selector, (filter_name, all_label) in AwsStoreCategories.sidebar_filter_map.items():
-            block = soup.find(attrs={"data-testid": selector})
-            if not block:
+        for filter_name, (facet_type, all_label) in SearchAwsStore.filter_facets.items():
+            facet_options = facets.get(facet_type, [])
+            if not facet_options:
                 if logger:
-                    logger.warning(f"AWS Marketplace: sidebar block '{selector}' not found on search page")
+                    logger.warning(f"AWS Marketplace: facet '{facet_type}' returned no options; keeping previously cached {filter_name}")
                 continue
 
+            name_counts = Counter(option["DisplayName"] for option in facet_options)
             options = [{"name": all_label, "data-value": all_label}]
-            seen_ids = set()
-            for el in block.find_all(attrs={"data-metric-meta-data": True}):
-                try:
-                    meta = json.loads(el["data-metric-meta-data"])
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    continue
-                comp_id = meta.get("componentId")
-                name = meta.get("subComponent")
-                if not comp_id or not name or comp_id in seen_ids:
-                    continue
-                seen_ids.add(comp_id)
-                options.append({"name": name, "data-value": comp_id})
+            used_names = {all_label}
+            seen_values = set()
 
-            if len(options) > 1:
-                result[filter_name] = options
-                if logger:
-                    logger.info(f"AWS Marketplace: extracted {len(options) - 1} {filter_name.lower()} from sidebar")
-            elif logger:
-                logger.warning(f"AWS Marketplace: no options parsed from {selector}")
+            for option in facet_options:
+                value = option["Value"]
+                if value in seen_values:
+                    continue
+                seen_values.add(value)
 
-        return result
+                name = option["DisplayName"]
+                if name_counts[name] > 1:
+                    # Distinct entries that happen to share a label; qualify with
+                    # the start of the identifier that actually distinguishes them
+                    name = f"{name} ({value[:8]})"
+                # Belt and braces: guarantee the invariant the callers rely on
+                unique_name = name
+                suffix = 2
+                while unique_name in used_names:
+                    unique_name = f"{name} ({suffix})"
+                    suffix += 1
+                used_names.add(unique_name)
+
+                entry = {"name": unique_name, "data-value": value}
+                if option.get("Parent"):
+                    entry["parent"] = option["Parent"]
+                options.append(entry)
+
+            collected[filter_name] = options
+            if logger:
+                logger.info(f"AWS Marketplace: collected {len(options) - 1} options for {filter_name}")
+
+        return collected
