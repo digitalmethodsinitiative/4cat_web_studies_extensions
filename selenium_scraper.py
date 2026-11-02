@@ -13,7 +13,7 @@ from requests.utils import requote_uri
 from urllib.parse import urlparse, parse_qs, unquote
 
 from backend.lib.search import Search
-from common.lib.exceptions import ProcessorException
+from common.lib.exceptions import ProcessorException, QueryParametersException, QueryNeedsExplicitConfirmationException
 from common.lib.user_input import UserInput
 from common.lib.helpers import split_urls
 
@@ -1320,6 +1320,9 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         Splitting is done by common.lib.helpers.split_urls(); this function adds the requote_uri() pass and the
         valid/invalid split that callers use to warn the user.
 
+        Valid URLs are returned percent-encoded, ready to fetch; invalid ones are returned as the user typed them, so
+        that a warning can show them something they recognise.
+
         :param str params_url_text:  Text string of URLs separated by newlines or commas
         :param tuple allowed_schemes:  Tuple of allowed schemes (default: ('http://', 'https://', 'ftp://', 'ftps://'))
         """
@@ -1328,14 +1331,54 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         validated_urls = []
         invalid_urls = []
         for url in potential_urls:
+            url = url.strip()
+            if not url:
+                # split_urls keeps a whitespace-only line; there is nothing to report about it
+                continue
             # requote_uri will fix any issues with spaces and other characters; seems better than urllib.parse.quote which does not work if the url is already quoted
-            url = requote_uri(url.strip())
-            if is_url(url, require_protocol=True):
-                validated_urls.append(url)
+            requoted = requote_uri(url)
+            if is_url(requoted, require_protocol=True):
+                validated_urls.append(requoted)
             else:
+                # report the text the user actually typed; percent-encoding something already broken only obscures it
                 invalid_urls.append(url)
 
         return validated_urls, invalid_urls
+
+    @staticmethod
+    def urls_from_query(query, extra_warnings=None, allowed_schemes=None):
+        """
+        Collect the URLs a user entered in the "query" parameter, for use in validate_query().
+
+        URLs that do not validate are not discarded. A researcher may knowingly enter an unusual URL (an archive
+        wildcard, an odd port), so they are listed back to the user and then collected along with the rest once the
+        user confirms, instead of disappearing without a word.
+
+        `extra_warnings` lets a datasource add warnings of its own, so that a query with several things worth
+        mentioning asks the user to confirm once rather than once per warning.
+
+        :param dict query:  Query parameters, as passed to validate_query()
+        :param list extra_warnings:  Further warnings to show alongside any about invalid URLs
+        :param tuple allowed_schemes:  Passed on to validate_urls_from_params()
+        :return list:  The URLs to collect, valid ones first
+        """
+        if not query.get("query", None):
+            raise QueryParametersException("Please provide a List of urls.")
+
+        validated_urls, invalid_urls = SeleniumWrapper.validate_urls_from_params(query.get("query", ""),
+                                                                                allowed_schemes=allowed_schemes)
+        if not validated_urls and not invalid_urls:
+            raise QueryParametersException("No Urls detected!")
+
+        warnings = list(extra_warnings) if extra_warnings else []
+        if invalid_urls:
+            warnings.append("These do not look like valid URLs:\n" + "\n".join(invalid_urls))
+
+        if warnings and not query.get("frontend-confirm"):
+            raise QueryNeedsExplicitConfirmationException("\n\n".join(warnings)
+                                                          + "\n\nDo you want to continue?")
+
+        return validated_urls + invalid_urls
 
     @staticmethod
     def get_beautiful_links(page_source, domain, beautiful_soup_parser='html.parser'):

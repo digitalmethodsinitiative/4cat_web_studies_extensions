@@ -7,7 +7,6 @@ import traceback
 import datetime
 import time
 from urllib.parse import unquote, urlparse, parse_qs
-from ural import is_url
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
@@ -15,10 +14,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import StaleElementReferenceException, InvalidSessionIdException, TimeoutException
 
 from extensions.web_studies.selenium_scraper import SeleniumSearch
-from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException
+from common.lib.exceptions import ProcessorInterruptedException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
-from common.lib.helpers import split_urls, url_to_hash
+from common.lib.helpers import url_to_hash
 
 class AmazonProductSearch(SeleniumSearch):
     """
@@ -527,13 +526,7 @@ class AmazonProductSearch(SeleniumSearch):
         :return dict:  Safe query parameters
         """
 
-        # this is the bare minimum, else we can't narrow down the full data set
-        if not query.get("query", None):
-            raise QueryParametersException("Please provide a List of urls.")
-        urls = [url.strip() for url in split_urls(query.get("query", ""))]
-        preprocessed_urls = [url for url in urls if is_url(url)]
-        if not preprocessed_urls:
-            raise QueryParametersException("No Urls detected!")
+        preprocessed_urls = SeleniumSearch.urls_from_query(query)
 
         return {
             "urls": preprocessed_urls,

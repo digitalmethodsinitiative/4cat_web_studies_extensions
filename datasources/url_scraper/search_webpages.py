@@ -7,10 +7,9 @@ from urllib.parse import urlparse
 import datetime
 import random
 from ural import is_url
-from requests.utils import requote_uri
 
 from extensions.web_studies.selenium_scraper import SeleniumSearch
-from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException, QueryNeedsExplicitConfirmationException
+from common.lib.exceptions import ProcessorInterruptedException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
 from common.lib.helpers import url_to_hash
@@ -321,19 +320,7 @@ class SearchWithSelenium(SeleniumSearch):
         :param User user:  User object of user who has submitted the query
         :return dict:  Safe query parameters
         """
-        if not query.get("query", None):
-            raise QueryParametersException("Please provide a List of urls.")
-
-        validated_urls, invalid_urls = SeleniumSearch.validate_urls_from_params(query.get("query", ""))
-
-        if invalid_urls:
-            if not query.get("frontend-confirm"):
-                raise QueryNeedsExplicitConfirmationException(f"Invalid Urls detected: \n{invalid_urls} \nContinue anyway?")
-            else:
-                validated_urls += invalid_urls
-
-        if not validated_urls:
-            raise QueryParametersException("No Urls detected!")
+        validated_urls = SeleniumSearch.urls_from_query(query)
 
         return {
             "urls": validated_urls,

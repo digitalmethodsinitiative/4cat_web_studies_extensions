@@ -9,7 +9,6 @@ import requests
 import time
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from ural import is_url
 from dateutil.relativedelta import relativedelta
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -17,10 +16,10 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 
 from extensions.web_studies.selenium_scraper import SeleniumSearch
-from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException, ProcessorException, QueryNeedsExplicitConfirmationException
+from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException, ProcessorException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
-from common.lib.helpers import split_urls, url_to_hash
+from common.lib.helpers import url_to_hash
 
 
 class SearchWebArchiveWithSelenium(SeleniumSearch):
@@ -630,15 +629,6 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
         :return dict:  Safe query parameters
         """
 
-        # this is the bare minimum, else we can't narrow down the full data set
-        if not query.get("query", None):
-            raise QueryParametersException("Please provide a List of urls.")
-
-        urls = [url.strip() for url in split_urls(query.get("query", ""))]
-        validated_urls = [url for url in urls if is_url(url)]
-        if not validated_urls:
-            raise QueryParametersException("No Urls detected!")
-
         # the dates need to make sense as a range to search within
         query["min_date"], query["max_date"] = query.get("daterange")
         if query["max_date"] is None:
@@ -648,14 +638,14 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
         if query["max_date"] < query["min_date"]:
             raise QueryParametersException("End date must be after start date.")
         
-        if not query.get("frontend-confirm"):
-            # Estimate max possible snapshots to avoid overload
-            frequency = query.get("frequency", "first")
-            segments = SearchWebArchiveWithSelenium.build_segments(query["min_date"], query["max_date"], frequency)
-            if len(segments) > 50:
-                warning = "This query requests %s snapshots per URL" % ("{:,}".format(len(segments)))
-                warning += " Do you want to continue?"
-                raise QueryNeedsExplicitConfirmationException(warning)
+        # Estimate max possible snapshots to avoid overload; warned about together with any bad URLs
+        warnings = []
+        frequency = query.get("frequency", "first")
+        segments = SearchWebArchiveWithSelenium.build_segments(query["min_date"], query["max_date"], frequency)
+        if len(segments) > 50:
+            warnings.append("This query requests %s snapshots per URL." % ("{:,}".format(len(segments))))
+
+        validated_urls = SeleniumSearch.urls_from_query(query, extra_warnings=warnings)
 
         return {
             "query": query.get("query"),

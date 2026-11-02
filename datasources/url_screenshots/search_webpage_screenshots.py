@@ -15,7 +15,7 @@ from selenium.common import UnexpectedAlertPresentException
 from extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException
 from common.lib.user_input import UserInput
-from common.lib.helpers import convert_to_int, split_urls, url_to_hash
+from common.lib.helpers import convert_to_int, url_to_hash
 
 
 class ScreenshotWithSelenium(SeleniumSearch):
@@ -273,12 +273,7 @@ class ScreenshotWithSelenium(SeleniumSearch):
         :return dict:  Safe query parameters
         """
 
-        # this is the bare minimum, else we can't narrow down the full data set
-        if not query.get("query", None):
-            raise QueryParametersException("Please provide a List of urls.")
-
-        urls = [url.strip() for url in split_urls(query.get("query", ""))]
-        preprocessed_urls = [url for url in urls if ural.is_url(url, require_protocol=True, tld_aware=True, only_http_https=True, allow_spaces_in_path=False)]
+        preprocessed_urls = SeleniumSearch.urls_from_query(query)
 
         max_sites = config.get("selenium.max_sites", default=120)
         if len(preprocessed_urls) > max_sites:
@@ -294,9 +289,6 @@ class ScreenshotWithSelenium(SeleniumSearch):
             detoolbarred_urls.append(url)
 
         preprocessed_urls = detoolbarred_urls
-
-        if not preprocessed_urls:
-            raise QueryParametersException("No valid URLs provided - please enter one valid URL per line.")
 
         return {
             **query,
