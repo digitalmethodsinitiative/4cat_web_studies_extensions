@@ -220,6 +220,8 @@ class ScreenshotURLs(BasicProcessor):
         total_urls = len(urls)
         # Do not scrape the same site twice
         scraped_urls = set()
+        # Names already handed out, so two entries that normalise to one URL cannot overwrite each other
+        used_filenames = set()
         metadata = {}
         for url, post_ids in urls.items():
             # Remove Archive.org toolbar
@@ -227,7 +229,9 @@ class ScreenshotURLs(BasicProcessor):
                 url = re.sub(r"archive\.org/web/([0-9]+)/", "archive.org/web/\\1if_/", url)
 
             scraped_urls.add(url)
-            filename = ScreenshotWithSelenium.filename_from_url(url) + ".png"
+            filename = ScreenshotWithSelenium.filename_from_url(url, staging_area=results_path,
+                                                                existing_filenames=used_filenames)
+            used_filenames.add(filename)
             result = {
                 "url": url,
                 "filename": filename,
