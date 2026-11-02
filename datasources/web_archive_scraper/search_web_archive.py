@@ -20,7 +20,7 @@ from extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException, ProcessorException, QueryNeedsExplicitConfirmationException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
-from common.lib.helpers import url_to_hash
+from common.lib.helpers import split_urls, url_to_hash
 
 
 class SearchWebArchiveWithSelenium(SeleniumSearch):
@@ -634,7 +634,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
         if not query.get("query", None):
             raise QueryParametersException("Please provide a List of urls.")
 
-        urls = [url.strip() for url in query.get("query", "").split('\n')]
+        urls = [url.strip() for url in split_urls(query.get("query", ""))]
         validated_urls = [url for url in urls if is_url(url)]
         if not validated_urls:
             raise QueryParametersException("No Urls detected!")

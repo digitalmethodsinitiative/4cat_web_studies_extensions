@@ -15,6 +15,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 from backend.lib.search import Search
 from common.lib.exceptions import ProcessorException
 from common.lib.user_input import UserInput
+from common.lib.helpers import split_urls
 
 from selenium import webdriver
 from selenium.webdriver.firefox.service import Service as FirefoxService
@@ -1316,48 +1317,19 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         be) told to separate by newlines, however, most other inputs are separated by commas. This function will take a
         string of URLs and return a validated list and list of invalid urls (which can then be used to inform the user).
 
-        Note: some urls may contain scheme (e.g., https://web.archive.org/web/20250000000000*/http://economist.com);
-        this function will work so long as the inner scheme does not follow a comma (e.g., "http://,https://"). Future
-        problems.
+        Splitting is done by common.lib.helpers.split_urls(); this function adds the requote_uri() pass and the
+        valid/invalid split that callers use to warn the user.
 
         :param str params_url_text:  Text string of URLs separated by newlines or commas
         :param tuple allowed_schemes:  Tuple of allowed schemes (default: ('http://', 'https://', 'ftp://', 'ftps://'))
         """
-        if allowed_schemes is None:
-            allowed_schemes = ('http://', 'https://', 'ftp://', 'ftps://')
-        potential_urls = []
-        # Split the text by \n
-        for line in params_url_text.split('\n'):
-            # Handle commas that may exist within URLs
-            parts = line.split(',')
-            recombined_url = ""
-            for part in parts:
-                if part.startswith(allowed_schemes):  # Other schemes exist
-                    # New URL start detected
-                    if recombined_url:
-                        # Already have a URL, add to list
-                        potential_urls.append(recombined_url)
-                    # Start new URL
-                    recombined_url = part
-                elif part:
-                    if recombined_url:
-                        # Add to existing URL
-                        recombined_url += "," + part
-                    else:
-                        # No existing URL, start new
-                        recombined_url = part
-                else:
-                    # Ignore empty strings
-                    pass
-            if recombined_url:
-                # Add any remaining URL
-                potential_urls.append(recombined_url.strip()) # Remove any trailing whitespace
+        potential_urls = split_urls(params_url_text, allowed_schemes=allowed_schemes)
 
         validated_urls = []
         invalid_urls = []
         for url in potential_urls:
             # requote_uri will fix any issues with spaces and other characters; seems better than urllib.parse.quote which does not work if the url is already quoted
-            url = requote_uri(url)
+            url = requote_uri(url.strip())
             if is_url(url, require_protocol=True):
                 validated_urls.append(url)
             else:
