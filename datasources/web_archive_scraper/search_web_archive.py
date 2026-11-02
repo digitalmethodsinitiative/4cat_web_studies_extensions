@@ -306,6 +306,8 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
         Central iterator that yields one event per segment:
         - On success: {'ok': True, 'url', 'seg_start', 'dt', 'snapshot_url'} after a snapshot has been loaded.
         - On failure: {'ok': False, 'url', 'seg_start', 'fail_url', 'error'} when no snapshot succeeded in a segment.
+          'seg_start' is None when the failure concerns the URL as a whole (e.g. the Web Archive API could not be
+          reached) rather than one segment; 'fail_url' is always a URL, falling back to the requested URL itself.
 
     This method also updates dataset progress/status per segment to avoid duplication in subclasses.
     """
@@ -341,7 +343,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
                         'ok': False,
                         'url': url,
                         'seg_start': None,
-                        'fail_url': None,
+                        'fail_url': url,
                         'error': f"WebArchive API error: {str(e)}",
                     }
                     continue
@@ -353,7 +355,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
                         'ok': False,
                         'url': url,
                         'seg_start': None,
-                        'fail_url': None,
+                        'fail_url': url,
                         'error': 'No archived snapshots found in given range',
                     }
                     continue
@@ -541,7 +543,7 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
             else:
                 failures += 1
                 seg_start = event['seg_start']
-                fail_url = event['fail_url']
+                fail_url = event.get('fail_url') or event['url']
                 datetimestr = seg_start.strftime('%Y-%m-%d %H:%M:%S') if seg_start else None
                 self.dataset.update_status(f"Failed snapshot: {event['url']}{' @ ' + datetimestr if datetimestr else ''}")
                 self.dataset.log(f"Failed snapshot: {event['url']}{' @ ' + datetimestr if datetimestr else ''} - {event.get('error', '')}")

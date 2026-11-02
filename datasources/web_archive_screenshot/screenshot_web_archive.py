@@ -119,7 +119,7 @@ class ScreenshotWebArchiveWithSelenium(SearchWebArchiveWithSelenium):
                 self.dataset.log(f"Failed snapshot: {event['url']}{' @ ' + datetimestr if datetimestr else ''} - {event.get('error', '')}")
                 metadata[metadata_key] = {
                     'url': event['url'],
-                    'fail_url': event['fail_url'],
+                    'fail_url': event.get('fail_url') or event['url'],
                     'error': event.get('error', ''),
                 }
                 continue
