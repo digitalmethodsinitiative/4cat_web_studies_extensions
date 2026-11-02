@@ -12,7 +12,7 @@ from extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.exceptions import ProcessorInterruptedException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
-from common.lib.helpers import url_to_hash
+from common.lib.helpers import readable_url, url_to_hash
 
 class SearchWithSelenium(SeleniumSearch):
     """
@@ -297,12 +297,19 @@ class SearchWithSelenium(SeleniumSearch):
         """
         if not page_result.get("id"):
             page_result["id"] = url_to_hash(page_result.get("url"))
+        # URLs are stored percent-encoded (validate_query puts user input through requote_uri), which makes
+        # non-ASCII ones unreadable. readable_url() shows those characters as themselves without changing where the
+        # URL leads, so a re-fetch downstream is unaffected.
+        for field in ("base_url", "url", "final_url"):
+            if page_result.get(field):
+                page_result[field] = readable_url(page_result[field])
+
         # Convert list of text strings to one string
         page_result['body'] = '\n'.join(page_result.get('body')) if page_result.get('body') else ''
         # Convert list of link objects to comma seperated urls
-        page_result['scraped_links'] = ','.join([link.get('url') for link in page_result.get('scraped_links')]) if page_result.get('scraped_links') else ''
+        page_result['scraped_links'] = ','.join(readable_url(link.get('url')) for link in page_result.get('scraped_links')) if isinstance(page_result.get('scraped_links'), list) else page_result.get('scraped_links', '')
         # Convert list of links to comma seperated urls
-        page_result['selenium_links'] = ','.join(map(str,page_result.get('selenium_links'))) if type(page_result.get('selenium_links')) == list else page_result.get('selenium_links', '')
+        page_result['selenium_links'] = ','.join(readable_url(link) for link in page_result.get('selenium_links')) if isinstance(page_result.get('selenium_links'), list) else page_result.get('selenium_links', '')
 
         return MappedItem(page_result)
 
