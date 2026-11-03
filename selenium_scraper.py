@@ -1381,15 +1381,26 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
         return validated_urls + invalid_urls
 
     @staticmethod
-    def get_beautiful_links(page_source, domain, beautiful_soup_parser='html.parser'):
+    def get_beautiful_links(page_source, base_url, beautiful_soup_parser='html.parser'):
         """
-        takes page_source and creates BeautifulSoup entity and url that was scraped, finds all links,
+        Takes page_source and creates BeautifulSoup entity and url that was scraped, finds all links,
         and returns the number of links and a list of all links in tuple of shown text, fixed link,
         and original link.
 
-        Uses domain to attempt to fix links that are partial.
+        Relative link is resolved against `base_url` the way a browser resolves it. Pass the whole URL from where 
+        the page was loaded. This is overridden by a <base href> tag in the page if present.
+
+        :param str page_source:  HTML to find links in
+        :param str base_url:  URL the page was loaded from, used to resolve relative links
+        :param str beautiful_soup_parser:  Parser for BeautifulSoup
         """
         soup = BeautifulSoup(page_source, beautiful_soup_parser)
+
+        # a <base href> in the document takes the place of the page's own URL, as it does in a browser
+        base_tag = soup.find('base', href=True)
+        if base_tag:
+            base_url = urljoin(base_url, base_tag['href'].strip())
+
         url_count = 0
         all_links= soup.findAll('a')
         links_to_return = []
@@ -1404,12 +1415,10 @@ class SeleniumWrapper(metaclass=abc.ABCMeta):
                 for img in link.findAll('img'):
                     alt_text = img.get('alt')
                     if alt_text and isinstance(alt_text, str):
-                        link_text = ' '.join([link_text, alt_text])
-                # Fix URL if needed
-                if link_url.strip()[:4] == "http":
-                    pass
-                else:
-                    link_url = urljoin(domain, link_url)
+                        link_text = f'{link_text} {alt_text}'
+                # Resolve against the base; urljoin leaves an already absolute URL as it is, mailto: and
+                # javascript: included, so it needs no special case
+                link_url = urljoin(base_url, link_url.strip())
             else:
                 continue
             links_to_return.append({'link_text': link_text,

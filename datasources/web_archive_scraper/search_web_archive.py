@@ -3,7 +3,6 @@ Web Archives HTML Scraper
 
 Currently designed around Firefox, but can also work with Chrome; results may vary
 """
-from urllib.parse import urlparse
 import datetime
 import requests
 import time
@@ -222,11 +221,11 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
         except Exception:
             body_text_list = []
 
-        # Links via BeautifulSoup for stable absolute URLs
+        # Links via BeautifulSoup for stable absolute URLs. final_url is driver.current_url, so the archive's own
+        # URL; wombat.js only rewrites what the page's scripts see (and thus the hrefs below), but not the page_source that
+        # WebDriver reports.
         try:
-            parsed = urlparse(final_url)
-            domain = f"{parsed.scheme}://{parsed.netloc}"
-            _, bs_links = SeleniumSearch.get_beautiful_links(page_source, domain)
+            _, bs_links = SeleniumSearch.get_beautiful_links(page_source, final_url)
         except Exception:
             bs_links = []
 
@@ -615,6 +614,14 @@ class SearchWebArchiveWithSelenium(SeleniumSearch):
 
         # Convert list of text strings to one string
         page_result['body'] = '\n'.join(page_result.get('body')) if page_result.get('body') else ''
+
+        # Note: Web Archive's wombat.js patches the DOM so the page's own scripts see the
+        # original site's URLs rather than archive ones. Selenium reads hrefs through that patched DOM and therefore
+        # reports links to the original site. Our `scraped_links` are collected from the HTML directly and resolves to 
+        # the archive. So `selenium_links` hold the original while `scraped_links` hold the archive's version. 
+        # Both are useful (e.g. `scraped_links` for finding/collecting archived content, `selenium_links` for networks 
+        # of the original site links).
+
         # Convert list of link objects to comma separated urls
         page_result['scraped_links'] = ','.join(readable_url(link.get('url')) for link in page_result.get('scraped_links')) if isinstance(page_result.get('scraped_links'), list) else page_result.get('scraped_links', '')
         # Convert list of links to comma separated urls

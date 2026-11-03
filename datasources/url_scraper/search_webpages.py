@@ -185,9 +185,9 @@ class SearchWithSelenium(SeleniumSearch):
                 result['error'] = scraped_page.get('error') # This should be None...
                 result['selenium_links'] = scraped_page.get('links', [])
 
-                # Collect links from page source
-                domain = urlparse(url).scheme + '://' + urlparse(url).netloc
-                num_of_links, links = self.get_beautiful_links(scraped_page['page_source'], domain)
+                # Collect links from page source; resolve against where the page ended up, not where we asked
+                num_of_links, links = self.get_beautiful_links(scraped_page['page_source'],
+                                                               scraped_page.get('final_url') or url)
                 result['scraped_links'] = links
 
                 # Scrape iframes as well
@@ -214,9 +214,9 @@ class SearchWithSelenium(SeleniumSearch):
                         result['body'] += ['\n'] + self.scrape_beautiful_text(iframe_page['page_source'])
                         result['html'] += '\n' + iframe_page['page_source']
                         result['selenium_links'] += iframe_page.get('links', [])
-                        # Collect links from page source
-                        domain = urlparse(link).scheme + '://' + urlparse(link).netloc
-                        num_of_links, links = self.get_beautiful_links(iframe_page['page_source'], domain)
+                        # Collect links from page source; the iframe resolves against its own URL
+                        num_of_links, links = self.get_beautiful_links(iframe_page['page_source'],
+                                                                       iframe_page.get('final_url') or link)
                         result['scraped_links'] += links
 
                 # Check if additional subpages need to be crawled
