@@ -17,7 +17,7 @@ from extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.exceptions import ProcessorInterruptedException
 from common.lib.item_mapping import MappedItem
 from common.lib.user_input import UserInput
-from common.lib.helpers import url_to_hash
+from common.lib.helpers import readable_url, url_to_hash
 
 class AmazonProductSearch(SeleniumSearch):
     """
@@ -453,6 +453,10 @@ class AmazonProductSearch(SeleniumSearch):
         """
         if not page_result.get("id"):
             page_result["id"] = page_result.get("product_id") if page_result.get("product_id") else url_to_hash(page_result.get("url"))
+        # Make URLs readable (validate_query puts user input through requote_uri)
+        for field in ("url", "final_url"):
+            if page_result.get(field):
+                page_result[field] = readable_url(page_result[field])
         # Convert the recommendations to comma-separated strings
         recommendations = page_result.pop("recommendations")
         page_result["rec_types_displayed"] = ", ".join(recommendations.keys())
