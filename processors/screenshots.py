@@ -40,7 +40,8 @@ class ScreenshotURLs(BasicProcessor):
                 "type": UserInput.OPTION_TEXT,
                 "help": "Column(s) to extract URLs",
                 "default": "body",
-                "tooltip": "URLs will be extracted from each enabled column."
+                "tooltip": "URLs will be extracted from each enabled column, whether the column holds one "
+                           "URL, a list of URLs separated by commas, or text with URLs in it."
             },
             "capture": {
                 "type": UserInput.OPTION_CHOICE,
@@ -83,14 +84,6 @@ class ScreenshotURLs(BasicProcessor):
                 "default": 0,
                 "min": 0,
                 "max": 15,
-            },
-            "split-comma": {
-                "type": UserInput.OPTION_TOGGLE,
-                "help": "Split column values by comma?",
-                "default": False,
-                "tooltip": "No longer needed for a list of http:// or https:// URLs separated by commas: those "
-                           "are always read as separate URLs now. Enabling this splits a value on every comma, "
-                           "which breaks a URL that contains one, such as a Google Maps link."
             },
         }
 
@@ -139,7 +132,6 @@ class ScreenshotURLs(BasicProcessor):
             return
 
         # Collect URLs from parent dataset
-        split_comma = self.parameters.get("split-comma")
         columns = self.parameters.get("columns")
         if not columns:
             self.dataset.update_status("No columns selected; no screenshots taken.", is_final=True)
@@ -164,13 +156,9 @@ class ScreenshotURLs(BasicProcessor):
                     # convert to string
                     value = str(value)
 
-                # remove all whitespace from beginning and end (needed for single URL check)
-                values = [value.strip()]
-                if split_comma:
-                    values = values[0].split(',')
-
-                for value in values:
-                    post_urls |= set(urls_in_text(value))
+                # a value may hold one URL, a list of them separated by commas, or text with URLs in it;
+                # urls_in_text reads all three, and keeps a comma that is part of a URL
+                post_urls |= set(urls_in_text(value))
 
             for post_url in post_urls:
                 if post_url not in urls:
