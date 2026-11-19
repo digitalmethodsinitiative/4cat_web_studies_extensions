@@ -6,11 +6,10 @@ import re
 import os
 import json
 import time
-from ural import urls_from_text
 from selenium.common import UnexpectedAlertPresentException
 
 from backend.lib.processor import BasicProcessor
-from common.lib.helpers import UserInput, convert_to_int
+from common.lib.helpers import UniqueFilenames, UserInput, convert_to_int, urls_in_text
 from common.lib.exceptions import ProcessorInterruptedException, ProcessorException
 from extensions.web_studies.selenium_scraper import SeleniumWrapper
 from extensions.web_studies.datasources.url_screenshots.search_webpage_screenshots  import ScreenshotWithSelenium
@@ -90,8 +89,9 @@ class ScreenshotURLs(BasicProcessor):
                 "type": UserInput.OPTION_TOGGLE,
                 "help": "Split column values by comma?",
                 "default": False,
-                "tooltip": "If enabled, columns can contain multiple URLs separated by commas, which will be considered "
-                           "separately"
+                "tooltip": "No longer needed for a list of http:// or https:// URLs separated by commas: those "
+                           "are always read as separate URLs now. Enabling this splits a value on every comma, "
+                           "which breaks a URL that contains one, such as a Google Maps link."
             },
         }
 
@@ -171,7 +171,7 @@ class ScreenshotURLs(BasicProcessor):
                     values = values[0].split(',')
 
                 for value in values:
-                    post_urls |= set(urls_from_text(value))
+                    post_urls |= set(urls_in_text(value))
 
             for post_url in post_urls:
                 if post_url not in urls:
@@ -220,8 +220,8 @@ class ScreenshotURLs(BasicProcessor):
         total_urls = len(urls)
         # Do not scrape the same site twice
         scraped_urls = set()
-        # Names already handed out, so two entries that normalise to one URL cannot overwrite each other
-        used_filenames = set()
+        # Hands out the screenshot names, so two entries that normalise to one URL cannot overwrite each other
+        filenames = UniqueFilenames(results_path)
         metadata = {}
         for url, post_ids in urls.items():
             # Remove Archive.org toolbar
@@ -229,9 +229,7 @@ class ScreenshotURLs(BasicProcessor):
                 url = re.sub(r"archive\.org/web/([0-9]+)/", "archive.org/web/\\1if_/", url)
 
             scraped_urls.add(url)
-            filename = ScreenshotWithSelenium.filename_from_url(url, staging_area=results_path,
-                                                                existing_filenames=used_filenames)
-            used_filenames.add(filename)
+            filename = ScreenshotWithSelenium.filename_from_url(url, filenames=filenames)
             result = {
                 "url": url,
                 "filename": filename,

@@ -15,7 +15,7 @@ from selenium.common import UnexpectedAlertPresentException
 from extensions.web_studies.selenium_scraper import SeleniumSearch
 from common.lib.exceptions import QueryParametersException, ProcessorInterruptedException
 from common.lib.user_input import UserInput
-from common.lib.helpers import convert_to_int, url_to_hash
+from common.lib.helpers import UniqueFilenames, convert_to_int, url_to_hash
 
 
 class ScreenshotWithSelenium(SeleniumSearch):
@@ -168,8 +168,8 @@ class ScreenshotWithSelenium(SeleniumSearch):
         done = 0
         # Do not scrape the same site twice
         scraped_urls = set()
-        # Names already handed out, so a repeated URL cannot overwrite an earlier screenshot
-        used_filenames = set()
+        # Hands out the screenshot names, so a repeated URL cannot overwrite an earlier screenshot
+        filenames = UniqueFilenames(results_path)
         total_urls = len(urls_to_scrape)
         metadata = {}
 
@@ -185,9 +185,7 @@ class ScreenshotWithSelenium(SeleniumSearch):
             self.dataset.update_progress(done / total_urls)
             self.dataset.log("Capturing screenshot %i of %i: %s" % (done + 1, total_urls, url))
 
-            filename = self.filename_from_url(url, staging_area=results_path,
-                                              existing_filenames=used_filenames)
-            used_filenames.add(filename)
+            filename = self.filename_from_url(url, filenames=filenames)
             result = {
                 "id": url_to_hash(url),
                 "url": url,
@@ -300,23 +298,23 @@ class ScreenshotWithSelenium(SeleniumSearch):
         }
 
     @staticmethod
-    def filename_from_url(url, staging_area=None, existing_filenames=None, extension=".png"):
+    def filename_from_url(url, filenames=None, extension=".png"):
         """
         Return a filename for a given url.
 
         A screenshot is of a page, not of a file the URL points at, so the name keeps the domain and the timestamp
         readable and hashes the rest of the URL.
 
-        Pass `staging_area` and/or `existing_filenames` to keep the name unique. The same URL, or the same archived
-        snapshot, can be asked for twice in one dataset (a URL list may repeat an entry, and the Archive.org toolbar
-        rewrite can turn two entries into one), and without a check the second screenshot overwrites the first
-        without a word.
+        Pass a `UniqueFilenames` for the directory the screenshots are written to, and the name returned is
+        reserved there so that nothing else is handed it. The same URL, or the same archived snapshot, can be
+        asked for twice in one dataset (a URL list may repeat an entry, and the Archive.org toolbar rewrite can
+        turn two entries into one), and without that the second screenshot overwrites the first without a word.
 
         :param str url:  URL
-        :param Path staging_area:  Directory the screenshots are written to; a file of the same name already there
-        counts as a collision. None skips the on-disk check.
-        :param set existing_filenames:  Filenames already handed out for this dataset, checked alongside the staging
-        area, since a name is used in the metadata before its file exists.
+        :param UniqueFilenames filenames:  Names taken in the directory the screenshots are written to, which
+        also records the name returned here. Files already in that directory count as taken, and so does a name
+        handed out but not yet written, since a name is used in the metadata before its file exists. None returns
+        a name without reserving it.
         :param str extension:  Extension to append, the dot included
         :return str:  Filename, extension included
         """
@@ -338,20 +336,11 @@ class ScreenshotWithSelenium(SeleniumSearch):
             domain = domain.replace(":", "_")
 
         # the timestamp and hash are what identify the screenshot, so an over-long name gives up domain characters
-        # rather than those; a few bytes are held back for the "-1" a collision adds
+        # rather than those; a few bytes are held back for the "-1" that UniqueFilenames adds on a collision
         suffix = f"-{timestamp}-{url_hash}{extension}"
         max_domain_bytes = 255 - len(suffix.encode("utf-8")) - 4
         while len(domain.encode("utf-8")) > max_domain_bytes:
             domain = domain[:-1]
 
         filename = domain + suffix
-        if staging_area is None and not existing_filenames:
-            return filename
-
-        taken = existing_filenames if existing_filenames is not None else set()
-        index = 1
-        while filename in taken or (staging_area is not None and staging_area.joinpath(filename).exists()):
-            filename = f"{domain}-{timestamp}-{url_hash}-{index}{extension}"
-            index += 1
-
-        return filename
+        return filenames.reserve(filename) if filenames is not None else filename

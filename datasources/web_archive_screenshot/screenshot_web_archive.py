@@ -8,6 +8,7 @@ import json
 
 from extensions.web_studies.datasources.url_screenshots.search_webpage_screenshots  import ScreenshotWithSelenium
 from extensions.web_studies.datasources.web_archive_scraper.search_web_archive import SearchWebArchiveWithSelenium
+from common.lib.helpers import UniqueFilenames
 from common.lib.user_input import UserInput
 
 
@@ -106,8 +107,8 @@ class ScreenshotWebArchiveWithSelenium(SearchWebArchiveWithSelenium):
         wait = query.get("pause-time", 6)
 
         metadata = {}
-        # Names already handed out, so a repeated URL cannot overwrite an earlier screenshot
-        used_filenames = set()
+        # Hands out the screenshot names, so a repeated URL cannot overwrite an earlier screenshot
+        filenames = UniqueFilenames(staging)
         screenshots = 0
         failures = 0
         for event in self.iter_snapshots(query):
@@ -131,9 +132,7 @@ class ScreenshotWebArchiveWithSelenium(SearchWebArchiveWithSelenium):
             snapshot_url = event['snapshot_url']
             base_url = event['url']
             ts_slug = dt.strftime('%Y%m%d%H%M%S') if dt else 'unknown'
-            filename = ScreenshotWithSelenium.filename_from_url(snapshot_url, staging_area=staging,
-                                                                existing_filenames=used_filenames)
-            used_filenames.add(filename)
+            filename = ScreenshotWithSelenium.filename_from_url(snapshot_url, filenames=filenames)
             out_path = staging.joinpath(filename)
 
             error = ''
