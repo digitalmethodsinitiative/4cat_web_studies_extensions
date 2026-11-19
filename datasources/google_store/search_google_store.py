@@ -3,9 +3,29 @@ import datetime
 import requests
 from requests.auth import HTTPBasicAuth
 
-from common.lib.item_mapping import MappedItem
+from common.lib.item_mapping import MappedItem, MissingMappedField
 from common.lib.user_input import UserInput
 from extensions.web_studies.datasources.apple_store.search_apple_store import SearchAppleStore, collect_from_store
+
+
+def parse_date(value, *date_formats):
+    """
+    Read a date as the Google Play API formatted it, if it can be read
+
+    Returns None instead of raising when the value is not a date in any of the
+    given formats.
+
+    :param value:  Value to read as a date, or None
+    :param date_formats:  One or more formats to try, as strptime() takes them
+    :return datetime.datetime:  The date, or None if the value is not one
+    """
+    for date_format in date_formats:
+        try:
+            return datetime.datetime.strptime(value, date_format)
+        except (TypeError, ValueError):
+            continue
+
+    return None
 
 
 class SearchGoogleStore(SearchAppleStore):
@@ -325,7 +345,7 @@ class SearchGoogleStore(SearchAppleStore):
         query_term = item.pop("query", "")
         country = item.pop("country", "")
         formatted_item = {
-            "4CAT_collector": item.pop("collector", ""),
+            "4CAT_collector": collector,
             "4CAT_query_type": query_method,
             "query_term": query_term,
             "query_full_details": full_details,
@@ -346,8 +366,10 @@ class SearchGoogleStore(SearchAppleStore):
                 }
             elif query_method == 'reviews':
                 # Reviews
-                # date is in "2026-02-11T15:33L:00.000Z" format
-                date_reviewed = datetime.datetime.strptime(item.get("date"), "%Y-%m-%dT%H:%M:%S.%fZ") if item.get("date") else None
+                # date is in "2026-02-11T15:33:00.000Z" format, with the
+                # milliseconds occasionally left out
+                date_reviewed = parse_date(item.get("date"), "%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ")
+                date_replied = parse_date(item.get("replyDate"), "%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ")
                 formatted_item = {
                     "id": item["id"],
                     "date": date_reviewed.strftime('%Y-%m-%d %H:%M:%S') if date_reviewed else "",
@@ -359,7 +381,7 @@ class SearchGoogleStore(SearchAppleStore):
                     "version": item.get("version", ""),
                     "thumbs_up": item.get("thumbsUp", ""),
                     "reply_text": item.get("replyText", ""),
-                    "reply_date": datetime.datetime.strptime(item.get("replyDate"), "%Y-%m-%dT%H:%M:%S.%fZ").strftime('%Y-%m-%d %H:%M:%S') if item.get("replyDate") else "",
+                    "reply_date": date_replied.strftime('%Y-%m-%d %H:%M:%S') if date_replied else "",
                     "user_image": item.get("userImage", ""),
                 }
                 timestamp = date_reviewed.timestamp() if date_reviewed else item.get("collected_at_timestamp")
@@ -404,8 +426,16 @@ class SearchGoogleStore(SearchAppleStore):
                     "video_preview_link": item.get("previewVideo"),
                     "screenshots": ", ".join(item.get("screenshots", [])),
                     }
-                timestamp = item.get("updated") or item.get("released") or item.get("collected_at_timestamp")
-                
+                # the release date is formatted for the language the app was
+                # collected in, e.g. "Jun 2, 2023" in English but "5 de ago. de
+                # 2023" in Portuguese, so it can only be read when the app was
+                # collected in English. The date stays in the dataset as it was
+                # collected either way, next to collected_at_timestamp; the
+                # timestamp is marked missing rather than filled with a date
+                # the app was not released on.
+                date_released = parse_date(item.get("released"), "%b %d, %Y")
+                timestamp = int(date_released.timestamp()) if date_released else MissingMappedField("")
+
             else:
                 # search, similar, and developer endpoints return a subset of fields
                 formatted_item = {
@@ -421,8 +451,7 @@ class SearchGoogleStore(SearchAppleStore):
                     "icon_link": item.get("icon"),
                 }
             
-            # Released date in "Jun 2, 2023" format
-            formatted_item["timestamp"] = datetime.datetime.strptime(item.get("released"), "%b %d, %Y").timestamp() if item.get("released") else timestamp
+            formatted_item["timestamp"] = timestamp
             formatted_item["collected_at_timestamp"] = item.get("collected_at_timestamp")
 
         else:
