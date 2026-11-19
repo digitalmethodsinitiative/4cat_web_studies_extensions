@@ -5,7 +5,6 @@ Currently designed around Firefox, but can also work with Chrome; results may va
 """
 import datetime
 import ural
-import json
 import time
 import os
 import re
@@ -171,7 +170,9 @@ class ScreenshotWithSelenium(SeleniumSearch):
         # Hands out the screenshot names, so a repeated URL cannot overwrite an earlier screenshot
         filenames = UniqueFilenames(results_path)
         total_urls = len(urls_to_scrape)
-        metadata = {}
+        # a list of URLs is collected here rather than another dataset's posts, so no dataset holds the posts
+        # this media belongs to, and the entries record no post IDs
+        metadata = self.dataset.new_media_metadata(from_dataset=None, processor_type=self.type)
 
         count = 0
         while urls_to_scrape:
@@ -189,7 +190,6 @@ class ScreenshotWithSelenium(SeleniumSearch):
             result = {
                 "id": url_to_hash(url),
                 "url": url,
-                "filename": filename,
                 "timestamp": None,
                 "error": [],
                 "final_url": None,
@@ -247,12 +247,19 @@ class ScreenshotWithSelenium(SeleniumSearch):
                 result['final_url'] = self.driver.current_url
                 result['subject'] = self.driver.title
 
-            # Record result data
-            metadata[url] = result
+            # Record result data. A screenshot that was taken is a file in the archive; one that failed is only
+            # a record of the attempt, since no file was written for it
+            if success:
+                metadata.add_item(filename=filename, post_ids=[], url=url,
+                                  extra={"id": result["id"], "timestamp": result["timestamp"],
+                                         "final_url": result["final_url"], "subject": result["subject"],
+                                         "error": result["error"]})
+            else:
+                metadata.add_failure(post_ids=[], reason="error", reason_description=result["error"], url=url,
+                                     extra={"id": result["id"], "timestamp": result["timestamp"]})
             done += 1
 
-        with results_path.joinpath(".metadata.json").open("w", encoding="utf-8") as outfile:
-            json.dump(metadata, outfile)
+        metadata.write(results_path)
 
         self.dataset.log('Screenshots taken: %i' % screenshots)
         if screenshots != done:

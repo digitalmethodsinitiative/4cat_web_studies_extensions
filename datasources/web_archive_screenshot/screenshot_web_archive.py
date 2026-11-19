@@ -4,7 +4,6 @@ Web Archives Screenshot collector
 Currently designed around Firefox, but can also work with Chrome; results may vary
 """
 import datetime
-import json
 
 from extensions.web_studies.datasources.url_screenshots.search_webpage_screenshots  import ScreenshotWithSelenium
 from extensions.web_studies.datasources.web_archive_scraper.search_web_archive import SearchWebArchiveWithSelenium
@@ -106,7 +105,9 @@ class ScreenshotWebArchiveWithSelenium(SearchWebArchiveWithSelenium):
         staging = self.dataset.get_staging_area()
         wait = query.get("pause-time", 6)
 
-        metadata = {}
+        # archived snapshots are collected here rather than another dataset's posts, so no dataset holds the
+        # posts this media belongs to, and the entries record no post IDs
+        metadata = self.dataset.new_media_metadata(from_dataset=None, processor_type=self.type)
         # Hands out the screenshot names, so a repeated URL cannot overwrite an earlier screenshot
         filenames = UniqueFilenames(staging)
         screenshots = 0
@@ -116,15 +117,14 @@ class ScreenshotWebArchiveWithSelenium(SearchWebArchiveWithSelenium):
                 # record failure in metadata for transparency
                 failures += 1
                 seg_start = event['seg_start']
-                metadata_key = event['url'] + '@' + (seg_start.strftime('%Y%m%d%H%M%S') if seg_start else 'segment')
+                seg_slug = seg_start.strftime('%Y%m%d%H%M%S') if seg_start else None
                 datetimestr = seg_start.strftime('%Y-%m-%d %H:%M:%S') if seg_start else None
                 self.dataset.update_status(f"Failed snapshot: {event['url']}{' @ ' + datetimestr if datetimestr else ''}")
                 self.dataset.log(f"Failed snapshot: {event['url']}{' @ ' + datetimestr if datetimestr else ''} - {event.get('error', '')}")
-                metadata[metadata_key] = {
-                    'url': event['url'],
-                    'fail_url': event.get('fail_url') or event['url'],
-                    'error': event.get('error', ''),
-                }
+                metadata.add_failure(post_ids=[], reason='error', reason_description=event.get('error', ''),
+                                     url=event['url'],
+                                     extra={'fail_url': event.get('fail_url') or event['url'],
+                                            'snapshot_timestamp': seg_slug})
                 continue
 
             # Successful snapshot: take screenshot
@@ -144,21 +144,23 @@ class ScreenshotWebArchiveWithSelenium(SearchWebArchiveWithSelenium):
             except Exception as e:
                 error = str(e)
 
-            metadata_key = base_url + '@' + ts_slug
-            metadata[metadata_key] = {
-                'url': base_url,
+            snapshot_data = {
                 'snapshot_url': snapshot_url,
-                'filename': filename,
+                'snapshot_timestamp': ts_slug,
                 'final_url': self.driver.current_url,
                 'subject': self.driver.title,
                 'timestamp': int(datetime.datetime.now().timestamp()),
-                'error': error,
             }
+            if error:
+                # save_screenshot raised, so this snapshot has no file in the archive to record
+                metadata.add_failure(post_ids=[], reason='error', reason_description=error, url=base_url,
+                                     extra=snapshot_data)
+            else:
+                metadata.add_item(filename=filename, post_ids=[], url=base_url, extra=snapshot_data)
 
         # Write manifest
         try:
-            with staging.joinpath('.metadata.json').open('w', encoding='utf-8') as f:
-                json.dump(metadata, f)
+            metadata.write(staging)
         except Exception:
             self.dataset.log("Failed to write metadata manifest")
             self.log.error("Failed to write metadata manifest for Web Archive")

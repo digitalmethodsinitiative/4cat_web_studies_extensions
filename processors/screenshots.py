@@ -4,7 +4,6 @@ Screenshot URLs w/ Selenium
 import datetime
 import re
 import os
-import json
 import time
 from selenium.common import UnexpectedAlertPresentException
 
@@ -222,7 +221,8 @@ class ScreenshotURLs(BasicProcessor):
         scraped_urls = set()
         # Hands out the screenshot names, so two entries that normalise to one URL cannot overwrite each other
         filenames = UniqueFilenames(results_path)
-        metadata = {}
+        metadata = self.dataset.new_media_metadata(from_dataset=self.source_dataset.key,
+                                                   processor_type=self.type)
         for url, post_ids in urls.items():
             # Remove Archive.org toolbar
             if re.findall(r"archive\.org/web/[0-9]+/", url):
@@ -230,14 +230,13 @@ class ScreenshotURLs(BasicProcessor):
 
             scraped_urls.add(url)
             filename = ScreenshotWithSelenium.filename_from_url(url, filenames=filenames)
+            item_post_ids = sorted(post_ids['ids'])
             result = {
                 "url": url,
-                "filename": filename,
                 "timestamp": None,
                 "error": [],
                 "final_url": None,
                 "subject": None,
-                "post_ids": ", ".join(list(post_ids['ids'])),
             }
 
             attempts = 0
@@ -287,8 +286,6 @@ class ScreenshotURLs(BasicProcessor):
                     result['error'].append("Attempt %i: %s" % (attempts, str(e)))
                     continue
 
-                result['filename'] = filename
-
                 # Update file attribute with url if supported
                 if hasattr(os, "setxattr"):
                     os.setxattr(results_path.joinpath(filename), 'user.url', url.encode())
@@ -305,8 +302,16 @@ class ScreenshotURLs(BasicProcessor):
                 result['final_url'] = webdriver.driver.current_url
                 result['subject'] = webdriver.driver.title
 
-            # Record result data
-            metadata[url] = result
+            # Record result data. A screenshot that was taken is a file in the archive; one that failed is only
+            # a record of the attempt, since no file was written for it
+            if success:
+                metadata.add_item(filename=filename, post_ids=item_post_ids, url=url,
+                                  extra={"timestamp": result["timestamp"], "final_url": result["final_url"],
+                                         "subject": result["subject"], "error": result["error"]})
+            else:
+                metadata.add_failure(post_ids=item_post_ids, reason="error",
+                                     reason_description=result["error"], url=url,
+                                     extra={"timestamp": result["timestamp"]})
             done += 1
 
             if done % 50:
@@ -314,8 +319,7 @@ class ScreenshotURLs(BasicProcessor):
                     "processed %i/%i urls with %i screenshots taken" % (done, total_urls, screenshots))
             self.dataset.update_progress(done / total_urls)
 
-        with results_path.joinpath(".metadata.json").open("w", encoding="utf-8") as outfile:
-            json.dump(metadata, outfile)
+        metadata.write(results_path)
 
         self.dataset.log('Screenshots taken: %i' % screenshots)
         if screenshots != done:
